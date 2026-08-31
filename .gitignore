@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+
+# wasm-pack output
+/web/pkg
+
+# ROMs and battery saves - never commit copyrighted game data
+*.gb
+*.gbc
+*.sav
+/roms
+
+.DS_Store
