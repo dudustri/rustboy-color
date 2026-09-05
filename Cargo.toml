@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/rustboy-core"]
+members = [
+    "crates/rustboy-core",
+    "crates/rustboy-desktop",
+    "crates/rustboy-frontend",
+    "crates/rustboy-splash",
+]
 
 [workspace.package]
 version = "0.1.0"

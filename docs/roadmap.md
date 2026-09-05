@@ -112,15 +112,30 @@ it keeps a long project from feeling like six weeks of plumbing.
 
 | PR | Branch | Scope | Done when |
 |---|---|---|---|
-| **03** | `feat/desktop-host` | winit window, `pixels` blit, keyboard mapping, frame pacing, cpal output stream | `cargo run` opens a window showing a blank LCD |
-| **04** | `feat/wasm-host` | `wasm-bindgen` bindings, canvas `ImageData` blit, `<input type=file>` ROM loading, `build-web.sh` | same LCD in a browser tab |
+| **03** | `feat/desktop-host` | winit window, `pixels` blit, keyboard, ROM from the command line, frame pacing, plus the `rustboy-splash` and `rustboy-frontend` crates | done — a window shows the title screen, then a blank LCD |
+| **04** | `feat/wasm-host` | implement `Host` for a canvas: `ImageData` blit, `performance.now()`, keyboard, `<input type=file>`, `build-web.sh` | same screens in a browser tab |
 | **05** | `ci/multi-target` | GitHub Actions: build + test on x86_64 and aarch64, `cargo check` for wasm32, clippy, fmt | CI green on `main` |
+
+Two crates appeared during PR-03 that this plan did not foresee:
+
+| Crate | Why it exists |
+|---|---|
+| `rustboy-splash` | the title screen: a photo turned into pixels by a build script, faded in and out |
+| `rustboy-frontend` | the `Host` trait and the frame driver, so both platforms share one loop |
+
+`Frontend::tick` is the only way to get a frame painted, so PR-04 cannot skip
+the title screen or drift from the desktop's behaviour. That makes PR-04 much
+smaller than planned: four trait methods and some browser plumbing.
+
+Audio moved out of PR-03. `cpal` was going to be wired up here, but the sound
+chip only produces silence until M5, and it needs system packages on Linux. The
+`Host` trait already has `queue_audio`, so it plugs in later without changes.
 
 ### M2 · CPU — *goal: blargg `cpu_instrs` passes*
 
 | PR | Branch | Scope | Done when |
 |---|---|---|---|
-| **06** | `feat/cpu-mcycle-core` | `read8`/`write8`/`fetch8`/`push16`/`pop16` helpers that tick the bus, `Bus::testing()` | helpers tick exactly 4 T-cycles per access, proven by test |
+| ~~**06**~~ | — | **absorbed into PR-02.** The `read8`/`write8`/`fetch8`/`push16`/`pop16` helpers and `Bus::testing()` all shipped with the skeleton, with tests | done |
 | **07** | `feat/cpu-load-store` | the `LD` family: r/r, r/n, `(HL)`, 16-bit loads, `LD (nn),SP`, stack ops | opcode tests for each form |
 | **08** | `feat/cpu-alu` | `ADD ADC SUB SBC AND XOR OR CP`, `INC DEC`, 16-bit `ADD HL`, `DAA`, `CPL`, `SCF`, `CCF` | flag behaviour tested per op, `DAA` against a truth table |
 | **09** | `feat/cpu-control-flow` | `JP JR CALL RET RETI RST`, conditionals, the extra M-cycle a taken branch costs | timing test: taken vs not-taken differ by 4 T-cycles |
@@ -173,12 +188,11 @@ it keeps a long project from feeling like six weeks of plumbing.
 
 ```mermaid
 flowchart LR
-    P02["02 core skeleton"] --> P03["03 desktop"]
-    P02 --> P04["04 wasm"]
+    P02["02 core skeleton<br/>includes old PR-06"] --> P03["03 desktop<br/>+ splash + frontend"]
+    P03 --> P04["04 wasm"]
     P03 --> P05["05 CI"]
     P04 --> P05
-    P02 --> P06["06 M-cycle core"]
-    P06 --> P07["07 loads"] --> P08["08 ALU"] --> P09["09 control flow"] --> P10["10 CB prefix"] --> P11["11 interrupts"] --> P12["12 blargg"]
+    P02 --> P07["07 loads"] --> P08["08 ALU"] --> P09["09 control flow"] --> P10["10 CB prefix"] --> P11["11 interrupts"] --> P12["12 blargg"]
     P11 --> P13["13 PPU timing"] --> P14["14 BG FIFO"] --> P15["15 window"] --> P16["16 sprites"] --> P17["17 CGB color"]
     P13 --> P18["18 DMA"]
     P02 --> P19["19 cart header"] --> P20["20 MBC1/3/5"] --> P21["21 saves"]
@@ -210,51 +224,51 @@ What a reviewer should actually look at, since "looks fine" is not a review:
 
 | | |
 |---|---|
-| Current branch | `main` |
-| Last merged | *nothing yet* |
-| Ready to cut | **PR-01** and **PR-02**, both complete in the working tree |
+| Merged | **PR-01** docs and tooling, **PR-02** core skeleton |
+| Done, ready to cut | **PR-03** desktop host |
+| Next | **PR-05** CI, then **PR-04** wasm host |
 
-The workspace manifest cannot be separated from its only member — an empty
-`members` list is not a valid workspace — so `Cargo.toml` moved from PR-01 to
-PR-02, and PR-01 is docs and tooling only.
+### What runs today
 
-### PR-01 `docs/architecture-and-roadmap`
-
-```
-README.md  .gitignore  rust-toolchain.toml
-docs/architecture.md  docs/roadmap.md
+```sh
+cargo run -p rustboy-desktop                # title screen, then a blank LCD
+cargo run -p rustboy-desktop -- game.gbc    # loads a cartridge header
 ```
 
-### PR-02 `feat/core-skeleton`
+A window opens at 640x576, paced at 59.73 frames a second. Keys: arrows, A and
+X for the A and B buttons, Enter, Shift, F11 for fullscreen, Escape to quit.
 
-```
-Cargo.toml
-crates/rustboy-core/Cargo.toml
-crates/rustboy-core/src/
-  lib.rs  emulator.rs  bus.rs  timer.rs  joypad.rs  serial.rs
-  cpu/{mod,registers,exec}.rs
-  cartridge/{mod,header,mbc}.rs
-  ppu/{mod,fetcher,fifo,oam}.rs
-  apu/mod.rs
-```
+A real game still panics on the first instruction that is not one of the six
+written so far. That is what M2 fixes.
 
-Verified on this tree:
+### The crates
+
+| Crate | State |
+|---|---|
+| `rustboy-core` | skeleton: registers, bus, PPU modes, peripherals, 6 opcodes |
+| `rustboy-splash` | done |
+| `rustboy-frontend` | done |
+| `rustboy-desktop` | done, minus audio |
+| `rustboy-wasm` | empty directory, filled by PR-04 |
+
+### Gates on every push
 
 | Gate | Result |
 |---|---|
 | `cargo check --workspace --all-targets` | pass |
-| `cargo test --workspace` | 21 passed, 0 failed |
+| `cargo test --workspace` | 31 passed |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --check` | clean |
 
-What is real and what is deferred:
+### What is real, and what is still `todo!()`
 
-| Real now | `todo!()` until |
+| Working now | Waiting on |
 |---|---|
-| register file, flags, `AF` masking | opcode table — PR-07..10 |
-| bus address decode, echo RAM, I/O dispatch | mapper banking — PR-20 |
-| M-cycle `read8`/`write8`/`push16`/`pop16` | fetcher, FIFO, sprite scan — PR-14..16 |
-| interrupt dispatch, `EI` delay | APU synthesis — PR-22..24 |
-| timer falling-edge, joypad matrix | OAM DMA / HDMA — PR-18 |
-| PPU mode machine, LY/LYC, STAT, VBlank | |
-| cartridge header parse, `Bus::testing()` | |
+| register file, flags, `AF` masking | the other 240 opcodes — PR-07..10 |
+| bus address decode, echo RAM, I/O dispatch | bank switching — PR-20 |
+| M-cycle `read8`/`write8`/`push16`/`pop16` | fetcher, queues, sprite search — PR-14..16 |
+| interrupt dispatch, the `EI` delay | real sound — PR-22..24 |
+| timer falling edge, joypad matrix | OAM DMA and HDMA — PR-18 |
+| PPU mode timing, LY/LYC, STAT, VBlank | audio output on the host — M5 |
+| cartridge header parsing, `Bus::testing()` | |
+| title screen, frame pacing, keyboard, ROM loading | the browser host — PR-04 |

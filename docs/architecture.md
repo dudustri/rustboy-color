@@ -464,7 +464,13 @@ rustboy_color/
 │   │       ├── timer.rs          DIV and TIMA
 │   │       ├── joypad.rs
 │   │       └── serial.rs
-│   ├── rustboy-desktop/          winit + pixels + cpal
+│   ├── rustboy-splash/
+│   │   ├── assets/source.jpeg    the photo the title screen is made from
+│   │   ├── build.rs              turns it into pixels at compile time
+│   │   └── src/lib.rs            the fade, as two layers
+│   ├── rustboy-frontend/
+│   │   └── src/lib.rs            the Host trait and the frame driver
+│   ├── rustboy-desktop/          winit + pixels
 │   └── rustboy-wasm/             wasm-bindgen and a canvas
 ├── web/                          index.html + main.js
 ├── scripts/build-web.sh          wasm-pack into web/pkg

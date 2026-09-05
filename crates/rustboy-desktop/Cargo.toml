@@ -1,0 +1,14 @@
+[package]
+name = "rustboy-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rustboy-core = { path = "../rustboy-core" }
+rustboy-frontend = { path = "../rustboy-frontend" }
+pixels = "0.17"
+winit = "0.30"

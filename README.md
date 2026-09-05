@@ -3,7 +3,7 @@
 A Game Boy Color emulator written in Rust, running in the browser (wasm32) and
 natively on x86_64 and aarch64 from a single emulation core.
 
-**Status:** stage 1 of 7 — core skeleton. Not yet playable.
+**Status:** M1 of 6 — the desktop host runs. Not yet playable: only 6 of ~500 CPU instructions exist.
 
 ## Design
 
@@ -22,16 +22,25 @@ The short version:
 
 | Crate | Role |
 |---|---|
-| `rustboy-core` | CPU, PPU, APU, bus, cartridge — pure state machine |
-| `rustboy-desktop` | winit + pixels + cpal *(stage 2)* |
-| `rustboy-wasm` | wasm-bindgen + canvas + WebAudio *(stage 3)* |
+| `rustboy-core` | CPU, PPU, APU, bus, cartridge — pure state machine, no dependencies |
+| `rustboy-splash` | the title screen, built from a photo at compile time |
+| `rustboy-frontend` | the `Host` trait and the frame driver, shared by every platform |
+| `rustboy-desktop` | winit + pixels *(audio in M5)* |
+| `rustboy-wasm` | wasm-bindgen + canvas + WebAudio *(PR-04)* |
 
 ## Build
 
 ```sh
 cargo check --workspace
 cargo test --workspace
+cargo run -p rustboy-desktop                # title screen, then a blank LCD
+cargo run -p rustboy-desktop -- game.gbc    # load a cartridge
 ```
+
+Keys: arrows, A and X for the A and B buttons, Enter, Shift, F11 for fullscreen,
+Escape to quit.
+
+See [`docs/build.md`](docs/build.md) for how the build fits together.
 
 ## License
 
