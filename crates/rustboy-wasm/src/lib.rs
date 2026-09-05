@@ -9,7 +9,10 @@ use rustboy_core::{Button, FRAMEBUFFER_LEN, SCREEN_HEIGHT, SCREEN_WIDTH};
 use rustboy_frontend::{Frontend, Host};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::{Clamped, JsCast};
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData, KeyboardEvent};
+use web_sys::{
+    CanvasRenderingContext2d, Event, FileReader, HtmlCanvasElement, HtmlInputElement, ImageData,
+    KeyboardEvent,
+};
 
 // The animation callback hands itself back to the browser, so it holds its own handle.
 type FrameLoop = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
@@ -119,6 +122,65 @@ fn button_for(key: &str) -> Option<Button> {
     }
 }
 
+// Complain in the browser's console, the only place a tab can say anything.
+fn complain(message: &str) {
+    web_sys::console::error_1(&JsValue::from_str(message));
+}
+
+// Hand the bytes the reader collected to the frontend.
+fn take_rom(reader: &FileReader, frontend: &Shared) {
+    let Ok(buffer) = reader.result() else {
+        return complain("could not read that file");
+    };
+    let rom = js_sys::Uint8Array::new(&buffer).to_vec();
+    match frontend.borrow_mut().load_rom(rom) {
+        Ok(()) => (),
+        Err(error) => complain(&format!("that is not a game we can run: {error}")),
+    }
+}
+
+// Watch a file picker and load whatever gets chosen.
+fn listen_for_rom(input_id: &str, frontend: &Shared) -> Result<(), JsValue> {
+    let document = web_sys::window()
+        .and_then(|w| w.document())
+        .ok_or_else(|| JsValue::from_str("no document"))?;
+    let input: HtmlInputElement = document
+        .get_element_by_id(input_id)
+        .ok_or_else(|| JsValue::from_str("no file input with that id"))?
+        .dyn_into()?;
+
+    let frontend = Rc::clone(frontend);
+    let handler = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        let Some(file) = event
+            .target()
+            .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
+            .and_then(|input| input.files())
+            .and_then(|files| files.get(0))
+        else {
+            return;
+        };
+
+        let Ok(reader) = FileReader::new() else {
+            return complain("this browser has no file reader");
+        };
+
+        // Reading is asynchronous, so the rest happens in this second callback.
+        let done = reader.clone();
+        let frontend = Rc::clone(&frontend);
+        let onload = Closure::<dyn FnMut()>::new(move || take_rom(&done, &frontend));
+        reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+        onload.forget();
+
+        if reader.read_as_array_buffer(&file).is_err() {
+            complain("could not start reading that file");
+        }
+    });
+
+    input.set_onchange(Some(handler.as_ref().unchecked_ref()));
+    handler.forget(); // the page owns it now, for as long as the tab is open
+    Ok(())
+}
+
 /// Ask the browser to call us back before the next repaint.
 fn request_frame(callback: &Closure<dyn FnMut()>) {
     if let Some(window) = web_sys::window() {
@@ -126,9 +188,9 @@ fn request_frame(callback: &Closure<dyn FnMut()>) {
     }
 }
 
-/// Start the console on the canvas with the given id. Called from JavaScript.
+/// Start the console on the given canvas, taking games from the given file picker.
 #[wasm_bindgen]
-pub fn start(canvas_id: &str) -> Result<(), JsValue> {
+pub fn start(canvas_id: &str, rom_input_id: &str) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
 
     let mut browser = Browser::new(canvas_context(canvas_id)?);
@@ -136,6 +198,7 @@ pub fn start(canvas_id: &str) -> Result<(), JsValue> {
 
     listen("keydown", &frontend, true)?;
     listen("keyup", &frontend, false)?;
+    listen_for_rom(rom_input_id, &frontend)?;
 
     let next: FrameLoop = Rc::new(RefCell::new(None));
     let me = Rc::clone(&next);

@@ -37,6 +37,13 @@ cargo run -p rustboy-desktop                # title screen, then a blank LCD
 cargo run -p rustboy-desktop -- game.gbc    # load a cartridge
 ```
 
+For the browser, build the wasm once, then serve `web/`:
+
+```sh
+wasm-pack build crates/rustboy-wasm --target web --out-dir ../../web/pkg
+cargo run -p rustboy-wasm                   # http://localhost:8080
+```
+
 Keys: arrows, A and X for the A and B buttons, Enter, Shift, F11 for fullscreen,
 Escape to quit.
 

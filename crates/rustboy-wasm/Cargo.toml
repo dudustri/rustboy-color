@@ -21,13 +21,20 @@ console_error_panic_hook = "0.1"
 [dependencies.web-sys]
 version = "0.3"
 features = [
+    "Blob",
     "CanvasRenderingContext2d",
     "Document",
     "Element",
+    "Event",
     "EventTarget",
+    "File",
+    "FileList",
+    "FileReader",
     "HtmlCanvasElement",
+    "HtmlInputElement",
     "ImageData",
     "KeyboardEvent",
     "Performance",
     "Window",
+    "console",
 ]

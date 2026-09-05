@@ -113,7 +113,7 @@ it keeps a long project from feeling like six weeks of plumbing.
 | PR | Branch | Scope | Done when |
 |---|---|---|---|
 | **03** | `feat/desktop-host` | winit window, `pixels` blit, keyboard, ROM from the command line, frame pacing, plus the `rustboy-splash` and `rustboy-frontend` crates | done — a window shows the title screen, then a blank LCD |
-| **04** | `feat/wasm-host` | implement `Host` for a canvas: `ImageData` blit, `performance.now()`, keyboard, `<input type=file>`, `build-web.sh` | same screens in a browser tab |
+| **04** | `feat/wasm-host` | implement `Host` for a canvas: `ImageData` blit, `performance.now()`, keyboard, `<input type=file>`, and a small file server | same screens in a browser tab |
 | **05** | `ci/multi-target` | GitHub Actions: build + test on x86_64 and aarch64, `cargo check` for wasm32, clippy, fmt | CI green on `main` |
 
 Two crates appeared during PR-03 that this plan did not foresee:
