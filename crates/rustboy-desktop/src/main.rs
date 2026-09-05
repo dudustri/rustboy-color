@@ -83,8 +83,8 @@ fn button_for(key: &Key) -> Option<Button> {
         Key::Named(NamedKey::ArrowDown) => Some(Button::Down),
         Key::Named(NamedKey::Enter) => Some(Button::Start),
         Key::Named(NamedKey::Shift) => Some(Button::Select),
-        Key::Character(c) if c == "a" => Some(Button::A),
-        Key::Character(c) if c == "x" => Some(Button::B),
+        Key::Character(c) if c.eq_ignore_ascii_case("a") => Some(Button::A),
+        Key::Character(c) if c.eq_ignore_ascii_case("x") => Some(Button::B),
         _ => None,
     }
 }
@@ -220,5 +220,28 @@ fn main() {
 
     if let Err(error) = event_loop.run_app(&mut app) {
         eprintln!("the event loop stopped: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_button_has_a_key() {
+        for (key, button) in [
+            (Key::Named(NamedKey::ArrowUp), Button::Up),
+            (Key::Named(NamedKey::Enter), Button::Start),
+            (Key::Named(NamedKey::Shift), Button::Select),
+            (Key::Character("a".into()), Button::A),
+            (Key::Character("x".into()), Button::B),
+        ] {
+            assert_eq!(button_for(&key), Some(button));
+        }
+    }
+
+    #[test]
+    fn holding_shift_still_works() {
+        assert_eq!(button_for(&Key::Character("A".into())), Some(Button::A));
     }
 }

@@ -1,18 +1,20 @@
 //! The browser host: draws the console onto a canvas.
 //!
-//! The shared `Host` trait means this file only says how to draw and how to tell the time.
+//! Only says how to draw and how to tell the time; the frontend does the rest.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rustboy_core::{FRAMEBUFFER_LEN, SCREEN_HEIGHT, SCREEN_WIDTH};
+use rustboy_core::{Button, FRAMEBUFFER_LEN, SCREEN_HEIGHT, SCREEN_WIDTH};
 use rustboy_frontend::{Frontend, Host};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::{Clamped, JsCast};
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData, KeyboardEvent};
 
 // The animation callback hands itself back to the browser, so it holds its own handle.
 type FrameLoop = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+// The frame loop and the key handlers all reach the same frontend.
+type Shared = Rc<RefCell<Frontend>>;
 
 /// Everything the shared frontend needs from a browser tab.
 struct Browser {
@@ -80,6 +82,43 @@ fn canvas_context(canvas_id: &str) -> Result<CanvasRenderingContext2d, JsValue> 
         .map_err(Into::into)
 }
 
+// Pass key presses and releases on to the frontend.
+fn listen(name: &str, frontend: &Shared, pressed: bool) -> Result<(), JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    let frontend = Rc::clone(frontend);
+
+    let handler = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
+        let key = event.key();
+        if let Some(button) = button_for(&key) {
+            event.prevent_default(); // arrows would otherwise scroll the page
+            let mut frontend = frontend.borrow_mut();
+            frontend.set_button(button, pressed);
+            if pressed {
+                frontend.skip_splash();
+            }
+        }
+    });
+
+    window.add_event_listener_with_callback(name, handler.as_ref().unchecked_ref())?;
+    handler.forget(); // the page owns it now, for as long as the tab is open
+    Ok(())
+}
+
+// Which key works which button. Anything else is ignored.
+fn button_for(key: &str) -> Option<Button> {
+    match key {
+        "ArrowRight" => Some(Button::Right),
+        "ArrowLeft" => Some(Button::Left),
+        "ArrowUp" => Some(Button::Up),
+        "ArrowDown" => Some(Button::Down),
+        "Enter" => Some(Button::Start),
+        "Shift" => Some(Button::Select),
+        "a" | "A" => Some(Button::A),
+        "x" | "X" => Some(Button::B),
+        _ => None,
+    }
+}
+
 /// Ask the browser to call us back before the next repaint.
 fn request_frame(callback: &Closure<dyn FnMut()>) {
     if let Some(window) = web_sys::window() {
@@ -93,12 +132,15 @@ pub fn start(canvas_id: &str) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
 
     let mut browser = Browser::new(canvas_context(canvas_id)?);
-    let mut frontend = Frontend::new();
+    let frontend: Shared = Rc::new(RefCell::new(Frontend::new()));
+
+    listen("keydown", &frontend, true)?;
+    listen("keyup", &frontend, false)?;
 
     let next: FrameLoop = Rc::new(RefCell::new(None));
     let me = Rc::clone(&next);
     *next.borrow_mut() = Some(Closure::new(move || {
-        frontend.tick(&mut browser);
+        frontend.borrow_mut().tick(&mut browser);
         if let Some(callback) = me.borrow().as_ref() {
             request_frame(callback);
         }
