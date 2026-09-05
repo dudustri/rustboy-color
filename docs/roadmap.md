@@ -224,19 +224,24 @@ What a reviewer should actually look at, since "looks fine" is not a review:
 
 | | |
 |---|---|
-| Merged | **PR-01** docs and tooling, **PR-02** core skeleton |
-| Done, ready to cut | **PR-03** desktop host |
-| Next | **PR-05** CI, then **PR-04** wasm host |
+| Merged | **PR-01** docs, **PR-02** core skeleton, **PR-03** desktop host |
+| Done, ready to cut | **PR-04** browser host, **PR-05** CI |
+| Next | **M2**, starting with **PR-07**, the `LD` instructions |
+
+M1 is finished: the same screens appear on a desktop window and in a browser
+tab, from one core.
 
 ### What runs today
 
 ```sh
 cargo run -p rustboy-desktop                # title screen, then a blank LCD
 cargo run -p rustboy-desktop -- game.gbc    # loads a cartridge header
+cargo run -p rustboy-wasm                   # builds the wasm, serves it on 8080
 ```
 
-A window opens at 640x576, paced at 59.73 frames a second. Keys: arrows, A and
-X for the A and B buttons, Enter, Shift, F11 for fullscreen, Escape to quit.
+The window opens at 640x576, paced at 59.73 frames a second. Keys: arrows, A and
+X for the A and B buttons, Enter, Shift, F11 for fullscreen, Escape to quit. The
+browser has the same keys and takes a game from a file picker.
 
 A real game still panics on the first instruction that is not one of the six
 written so far. That is what M2 fixes.
@@ -249,15 +254,18 @@ written so far. That is what M2 fixes.
 | `rustboy-splash` | done |
 | `rustboy-frontend` | done |
 | `rustboy-desktop` | done, minus audio |
-| `rustboy-wasm` | empty directory, filled by PR-04 |
+| `rustboy-wasm` | done, minus audio: the browser host plus a small file server |
 
 ### Gates on every push
 
+GitHub Actions runs all of these, on x86_64 and aarch64.
+
 | Gate | Result |
 |---|---|
-| `cargo check --workspace --all-targets` | pass |
-| `cargo test --workspace` | 31 passed |
+| `cargo build --workspace` | pass |
+| `cargo test --workspace --all-targets` | 36 passed |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+| `cargo clippy -p rustboy-wasm --lib --target wasm32-unknown-unknown` | clean |
 | `cargo fmt --check` | clean |
 
 ### What is real, and what is still `todo!()`
@@ -271,4 +279,5 @@ written so far. That is what M2 fixes.
 | timer falling edge, joypad matrix | OAM DMA and HDMA — PR-18 |
 | PPU mode timing, LY/LYC, STAT, VBlank | audio output on the host — M5 |
 | cartridge header parsing, `Bus::testing()` | |
-| title screen, frame pacing, keyboard, ROM loading | the browser host — PR-04 |
+| title screen, frame pacing, keyboard, ROM loading | |
+| both hosts, on a window and in a browser tab | |
