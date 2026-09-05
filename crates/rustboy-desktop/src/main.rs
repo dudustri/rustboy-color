@@ -1,6 +1,6 @@
 //! The desktop host: a window, a keyboard, and nothing else.
 //!
-//! Keys: arrows, X and Z for A and B, Enter, Shift, F11 fullscreen, Escape quits.
+//! Keys: arrows, A and X for A and B, Enter, Shift, F11 fullscreen, Escape quits.
 //!
 //! Pass a game on the command line: `cargo run -p rustboy-desktop -- game.gbc`
 
@@ -83,8 +83,8 @@ fn button_for(key: &Key) -> Option<Button> {
         Key::Named(NamedKey::ArrowDown) => Some(Button::Down),
         Key::Named(NamedKey::Enter) => Some(Button::Start),
         Key::Named(NamedKey::Shift) => Some(Button::Select),
-        Key::Character(c) if c == "x" => Some(Button::A),
-        Key::Character(c) if c == "z" => Some(Button::B),
+        Key::Character(c) if c == "a" => Some(Button::A),
+        Key::Character(c) if c == "x" => Some(Button::B),
         _ => None,
     }
 }
