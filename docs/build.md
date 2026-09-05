@@ -120,8 +120,16 @@ library is shipped to it.
 
 ```sh
 cargo build --workspace      # everything
-cargo run -p rustboy-desktop # the window
 cargo test --workspace       # every test
+cargo run -p rustboy-desktop # the window
+```
+
+For the browser, `wasm-pack` turns the crate into a `.wasm` file plus the
+JavaScript that loads it, then the same crate's binary serves the folder:
+
+```sh
+wasm-pack build crates/rustboy-wasm --target web --out-dir ../../web/pkg
+cargo run -p rustboy-wasm    # http://localhost:8080
 ```
 
 To force the title screen to be rebuilt without changing the photo:

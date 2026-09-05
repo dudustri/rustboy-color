@@ -471,9 +471,10 @@ rustboy_color/
 │   ├── rustboy-frontend/
 │   │   └── src/lib.rs            the Host trait and the frame driver
 │   ├── rustboy-desktop/          winit + pixels
-│   └── rustboy-wasm/             wasm-bindgen and a canvas
-├── web/                          index.html + main.js
-├── scripts/build-web.sh          wasm-pack into web/pkg
+│   └── rustboy-wasm/
+│       ├── src/lib.rs            the browser host, built to wasm
+│       └── src/main.rs           a small file server for trying it
+├── web/                          index.html, plus pkg/ once built
 └── .github/workflows/ci.yml      x86_64, aarch64, wasm32
 ```
 

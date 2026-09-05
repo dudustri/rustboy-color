@@ -5,6 +5,7 @@ members = [
     "crates/rustboy-desktop",
     "crates/rustboy-frontend",
     "crates/rustboy-splash",
+    "crates/rustboy-wasm",
 ]
 
 [workspace.package]

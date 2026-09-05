@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>rustboy-color</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: #14161a;
+        color: #c9d1d9;
+        font: 13px/1.4 system-ui, sans-serif;
+      }
+      /* The screen takes every pixel the controls do not need. */
+      .stage {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px;
+      }
+      /* Fills the stage; contain keeps the console's shape and letterboxes the rest. */
+      canvas {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+        image-rendering: pixelated;
+      }
+      .bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 8px 20px;
+        padding: 8px 12px;
+        border-top: 1px solid #21262d;
+        color: #7d8590;
+      }
+      kbd {
+        background: #21262d;
+        border: 1px solid #30363d;
+        border-radius: 3px;
+        padding: 0 4px;
+        font: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage"><canvas id="screen"></canvas></div>
+
+    <div class="bar">
+      <label>game: <input id="rom" type="file" accept=".gb,.gbc" /></label>
+      <span>
+        <kbd>arrows</kbd> move &middot; <kbd>a</kbd> <kbd>x</kbd> are A and B
+        &middot; <kbd>enter</kbd> start &middot; <kbd>shift</kbd> select
+      </span>
+    </div>
+
+    <script type="module">
+      import init, { start } from "./pkg/rustboy_wasm.js";
+
+      await init();
+      start("screen", "rom");
+    </script>
+  </body>
+</html>
