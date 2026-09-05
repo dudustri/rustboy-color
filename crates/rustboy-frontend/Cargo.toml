@@ -1,14 +1,13 @@
 [package]
-name = "rustboy-desktop"
+name = "rustboy-frontend"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+description = "The shared host layer: drives the console and the title screen for every platform."
 
 [dependencies]
 rustboy-core = { path = "../rustboy-core" }
-rustboy-frontend = { path = "../rustboy-frontend" }
-pixels = "0.17"
-winit = "0.30"
+rustboy-splash = { path = "../rustboy-splash" }
