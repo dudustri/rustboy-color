@@ -1,7 +1,4 @@
-//! Turns the source photo into the two title-screen layers at build time.
-//!
-//! The results land in OUT_DIR, so nothing generated is kept in the repository.
-//! Cargo reruns this only when the photo or this file changes.
+//! Builds the two title-screen layers from the photo, into OUT_DIR, never into the repository.
 
 use std::path::{Path, PathBuf};
 
@@ -65,8 +62,7 @@ fn glyph(c: char) -> [&'static str; GLYPH_HEIGHT] {
     }
 }
 
-// A 3 by 5 box for every character the byline needs. These are lower case, so
-// most letters only fill the middle rows and read as smaller than the title.
+// A 3 by 5 box per byline character. Lower case, so most letters only fill the middle rows.
 fn small_glyph(c: char) -> [&'static str; SMALL_HEIGHT] {
     match c {
         'b' => ["100", "110", "101", "110", "000"],

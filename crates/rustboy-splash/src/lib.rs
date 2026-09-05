@@ -1,8 +1,6 @@
 //! The title screen every host shows before a game loads.
 //!
-//! The picture and the words are separate layers, so the picture can fade away
-//! while the words stay lit. Both are built from `assets/source.jpeg` by
-//! `build.rs`, so nothing generated lives in the repository.
+//! Picture and words are separate layers, so the picture can fade out while the words stay.
 
 use rustboy_core::FRAMEBUFFER_LEN;
 
@@ -30,8 +28,7 @@ const BYLINE_FADE: f32 = 0.5; // how long the byline takes to appear
 /// How long the whole title screen lasts.
 pub const SECONDS: f32 = FADE_IN + HOLD + FADE_OUT + TEXT_HOLD;
 
-/// How bright the picture, the title and the byline are at this moment, or
-/// `None` once the title screen is over.
+/// How bright the picture, title and byline are now, or `None` once the title screen is over.
 pub fn levels(seconds: f32) -> Option<(f32, f32, f32)> {
     if seconds >= SECONDS {
         return None;
@@ -48,10 +45,7 @@ pub fn levels(seconds: f32) -> Option<(f32, f32, f32)> {
     Some((picture, text, byline))
 }
 
-/// Paint the title screen into a host's frame, and say whether it is still
-/// running. Once this returns `false` the host should show the console instead.
-///
-/// `frame` must be [`FRAMEBUFFER_LEN`] bytes.
+/// Paint the title screen into `frame` ([`FRAMEBUFFER_LEN`] bytes) and say if it is still running.
 pub fn render(seconds: f32, frame: &mut [u8]) -> bool {
     debug_assert_eq!(frame.len(), FRAMEBUFFER_LEN);
     let Some((picture, text, byline)) = levels(seconds) else {

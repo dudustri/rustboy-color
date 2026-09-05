@@ -1,8 +1,6 @@
-//! The shared host layer.
+//! The shared host layer: a platform says how to draw, this crate decides what goes on screen.
 //!
-//! A platform says how to draw and how to tell the time; this crate decides
-//! what goes on the screen. Because [`Frontend::tick`] is the only way to
-//! produce a frame, every platform gets the title screen for free.
+//! [`Frontend::tick`] is the only way to get a frame, so every platform gets the title screen.
 
 use rustboy_core::{Button, Cartridge, CartridgeError, Emulator, FRAMEBUFFER_LEN};
 

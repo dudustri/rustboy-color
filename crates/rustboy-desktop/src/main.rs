@@ -1,16 +1,15 @@
 //! The desktop host: a window, a keyboard, and nothing else.
 //!
-//! Keys: arrows move, X and Z are A and B, Enter starts, Shift selects,
-//! F11 fills the screen, Escape quits.
+//! Keys: arrows, X and Z for A and B, Enter, Shift, F11 fullscreen, Escape quits.
 //!
 //! Pass a game on the command line: `cargo run -p rustboy-desktop -- game.gbc`
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use pixels::{Pixels, SurfaceTexture};
-use rustboy_core::{Button, SCREEN_HEIGHT, SCREEN_WIDTH};
+use rustboy_core::{Button, SCREEN_HEIGHT, SCREEN_WIDTH, T_CYCLES_PER_FRAME, T_CYCLES_PER_SECOND};
 use rustboy_frontend::{Frontend, Host};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -21,11 +20,16 @@ use winit::window::{Fullscreen, Window, WindowButtons, WindowId};
 
 const SCALE: u32 = 4; // every console pixel becomes a 4 by 4 block
 
+// One frame on the real console: 70,224 ticks at 4,194,304 a second, just under 59.73 a second.
+const FRAME_TIME: Duration =
+    Duration::from_nanos((T_CYCLES_PER_FRAME as u64 * 1_000_000_000) / T_CYCLES_PER_SECOND as u64);
+
 // Everything the shared frontend needs from this platform.
 struct Desktop {
     window: Arc<Window>,
     pixels: Pixels<'static>,
     started: Instant,
+    next_frame: Instant, // when the next frame is due
 }
 
 impl Host for Desktop {
@@ -57,8 +61,7 @@ impl App {
         }
     }
 
-    // Fill the screen, or go back to a window. Borderless keeps whatever
-    // resolution the monitor is already using, so nothing has to change mode.
+    // Fill the screen or go back to a window, keeping the monitor's current resolution.
     fn toggle_fullscreen(&self) {
         let Some(desktop) = self.desktop.as_ref() else {
             return;
@@ -95,8 +98,7 @@ impl ApplicationHandler for App {
             .with_title("rustboy-color")
             .with_inner_size(LogicalSize::new(width * SCALE, height * SCALE))
             .with_min_inner_size(LogicalSize::new(width, height))
-            // Ask for minimise and maximise beside the close button. Whether they
-            // are actually drawn is up to the desktop.
+            // Ask for minimise and maximise; whether they are drawn is up to the desktop.
             .with_enabled_buttons(WindowButtons::all());
 
         let window = match event_loop.create_window(attributes) {
@@ -113,10 +115,12 @@ impl ApplicationHandler for App {
         let surface = SurfaceTexture::new(size.width, size.height, Arc::clone(&window));
         match Pixels::new(width, height, surface) {
             Ok(pixels) => {
+                let now = Instant::now();
                 self.desktop = Some(Desktop {
                     window,
                     pixels,
-                    started: Instant::now(),
+                    started: now,
+                    next_frame: now,
                 })
             }
             Err(error) => {
@@ -160,11 +164,22 @@ impl ApplicationHandler for App {
         }
     }
 
-    // Ask for another frame as soon as this one is done.
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(desktop) = self.desktop.as_ref() {
+    // Draw only when a frame is actually due, then sleep until the next one.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(desktop) = self.desktop.as_mut() else {
+            return;
+        };
+
+        let now = Instant::now();
+        if now >= desktop.next_frame {
+            desktop.next_frame += FRAME_TIME;
+            // After a stall, start again from now rather than racing to catch up.
+            if desktop.next_frame < now {
+                desktop.next_frame = now + FRAME_TIME;
+            }
             desktop.window.request_redraw();
         }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(desktop.next_frame));
     }
 }
 
@@ -200,7 +215,7 @@ fn main() {
         }
     };
 
-    // Poll rather than wait, because there is a frame to run every time round.
+    // Replaced each round by a deadline for the next frame.
     event_loop.set_control_flow(ControlFlow::Poll);
 
     if let Err(error) = event_loop.run_app(&mut app) {
