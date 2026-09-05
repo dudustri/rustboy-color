@@ -2,7 +2,10 @@
 //!
 //! Keys: arrows move, X and Z are A and B, Enter starts, Shift selects,
 //! F11 fills the screen, Escape quits.
+//!
+//! Pass a game on the command line: `cargo run -p rustboy-desktop -- game.gbc`
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -165,7 +168,30 @@ impl ApplicationHandler for App {
     }
 }
 
+// Read the game named on the command line, if there is one.
+fn load_rom(frontend: &mut Frontend) -> Result<(), String> {
+    let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) else {
+        return Ok(()); // no game is fine; the console shows a blank screen
+    };
+
+    let rom =
+        std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    frontend
+        .load_rom(rom)
+        .map_err(|e| format!("{} is not a game we can run: {e}", path.display()))
+}
+
 fn main() {
+    let mut app = App::new();
+    if let Err(problem) = load_rom(&mut app.frontend) {
+        eprintln!("{problem}");
+        return;
+    }
+    match app.frontend.title() {
+        Some(title) => println!("loaded {title}"),
+        None => println!("no game given, showing a blank screen"),
+    }
+
     let event_loop = match EventLoop::new() {
         Ok(event_loop) => event_loop,
         Err(error) => {
@@ -177,7 +203,6 @@ fn main() {
     // Poll rather than wait, because there is a frame to run every time round.
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new();
     if let Err(error) = event_loop.run_app(&mut app) {
         eprintln!("the event loop stopped: {error}");
     }

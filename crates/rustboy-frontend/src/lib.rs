@@ -48,6 +48,15 @@ impl Frontend {
         self.emulator.is_loaded()
     }
 
+    /// The name the cartridge gives itself, or `None` when nothing is loaded.
+    pub fn title(&self) -> Option<&str> {
+        self.emulator
+            .bus
+            .cartridge
+            .as_ref()
+            .map(|cartridge| cartridge.header.title.as_str())
+    }
+
     pub fn set_button(&mut self, button: Button, pressed: bool) {
         self.emulator.set_button(button, pressed);
     }
