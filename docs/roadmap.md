@@ -105,8 +105,8 @@ it keeps a long project from feeling like six weeks of plumbing.
 
 | PR | Branch | Scope | Done when |
 |---|---|---|---|
-| **01** | `chore/workspace-scaffold` | workspace `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`, `README.md`, `docs/` | `cargo check` passes on an empty workspace |
-| **02** | `feat/core-skeleton` | `rustboy-core` module tree: registers, bus decode, peripheral structs, `Emulator::run_frame`, bodies `todo!()` | `cargo check` + register unit tests pass |
+| **01** | `docs/architecture-and-roadmap` | `README.md`, `.gitignore`, `rust-toolchain.toml`, `docs/` | reviewed; nothing to build |
+| **02** | `feat/core-skeleton` | workspace `Cargo.toml` + `rustboy-core`: registers, bus decode, peripherals, PPU mode machine, `Emulator::run_frame`; opcode bodies `todo!()` | check, test, clippy, fmt all green |
 
 ### M1 · Hosts — *goal: a blank LCD on both platforms*
 
@@ -212,18 +212,49 @@ What a reviewer should actually look at, since "looks fine" is not a review:
 |---|---|
 | Current branch | `main` |
 | Last merged | *nothing yet* |
-| In progress | **PR-01 + start of PR-02**, uncommitted in the working tree |
+| Ready to cut | **PR-01** and **PR-02**, both complete in the working tree |
 
-Files currently on disk and untracked:
+The workspace manifest cannot be separated from its only member — an empty
+`members` list is not a valid workspace — so `Cargo.toml` moved from PR-01 to
+PR-02, and PR-01 is docs and tooling only.
+
+### PR-01 `docs/architecture-and-roadmap`
 
 ```
-Cargo.toml  rust-toolchain.toml  .gitignore  README.md   <- PR-01
-docs/architecture.md  docs/roadmap.md                    <- PR-01
-crates/rustboy-core/Cargo.toml                           <- PR-02
-crates/rustboy-core/src/lib.rs                           <- PR-02
-crates/rustboy-core/src/cpu/registers.rs                 <- PR-02
+README.md  .gitignore  rust-toolchain.toml
+docs/architecture.md  docs/roadmap.md
 ```
 
-**Recommendation:** cut PR-01 now from the four root files plus `docs/`, and
-keep the `crates/` work for PR-02. That gives `main` a green first commit and
-keeps the review small.
+### PR-02 `feat/core-skeleton`
+
+```
+Cargo.toml
+crates/rustboy-core/Cargo.toml
+crates/rustboy-core/src/
+  lib.rs  emulator.rs  bus.rs  timer.rs  joypad.rs  serial.rs
+  cpu/{mod,registers,exec}.rs
+  cartridge/{mod,header,mbc}.rs
+  ppu/{mod,fetcher,fifo,oam}.rs
+  apu/mod.rs
+```
+
+Verified on this tree:
+
+| Gate | Result |
+|---|---|
+| `cargo check --workspace --all-targets` | pass |
+| `cargo test --workspace` | 21 passed, 0 failed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+| `cargo fmt --check` | clean |
+
+What is real and what is deferred:
+
+| Real now | `todo!()` until |
+|---|---|
+| register file, flags, `AF` masking | opcode table — PR-07..10 |
+| bus address decode, echo RAM, I/O dispatch | mapper banking — PR-20 |
+| M-cycle `read8`/`write8`/`push16`/`pop16` | fetcher, FIFO, sprite scan — PR-14..16 |
+| interrupt dispatch, `EI` delay | APU synthesis — PR-22..24 |
+| timer falling-edge, joypad matrix | OAM DMA / HDMA — PR-18 |
+| PPU mode machine, LY/LYC, STAT, VBlank | |
+| cartridge header parse, `Bus::testing()` | |

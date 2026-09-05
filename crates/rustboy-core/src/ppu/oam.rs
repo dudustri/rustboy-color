@@ -4,18 +4,16 @@ pub const MAX_SPRITES_PER_LINE: usize = 10;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sprite {
-    /// Stored 16 lower than it looks, so sprites can slide in from off the top.
-    pub y: u8,
-    /// Stored 8 further right, so sprites can slide in from off the left.
-    pub x: u8,
-    pub tile: u8,
-    pub attributes: u8,
+    pub y: u8,          // stored 16 lower than it looks, so sprites can slide in from the top
+    pub x: u8,          // stored 8 further right, so sprites can slide in from the left
+    pub tile: u8,       // which picture to draw
+    pub attributes: u8, // palette, flips, and whether the background covers it
 }
 
 #[derive(Debug)]
 pub struct SpriteScan {
-    sprites: [Sprite; MAX_SPRITES_PER_LINE],
-    len: usize,
+    sprites: [Sprite; MAX_SPRITES_PER_LINE], // the ten slots
+    len: usize,                              // how many of them this line filled
 }
 
 impl SpriteScan {

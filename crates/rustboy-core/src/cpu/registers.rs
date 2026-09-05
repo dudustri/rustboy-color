@@ -1,18 +1,12 @@
-//! The SM83 register file.
+//! The CPU's registers: the handful of values it can work on directly.
 
-/// The flag register `F`, as `Z N H C` in bits 7-4.
-///
-/// The low nibble is wired to zero in hardware and stays zero even when a
-/// program writes ones into it.
+/// The flag register `F`: `Z N H C` live in the top 4 bits, the bottom 4 are always zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Flags {
-    pub z: bool,
-    /// Set by subtractions. Only `DAA` reads it.
-    pub n: bool,
-    /// Carry out of bit 3. Only `DAA` reads it.
-    pub h: bool,
-    /// Carry out of bit 7, or bit 15 for 16-bit adds.
-    pub c: bool,
+    pub z: bool, // the last sum came out zero
+    pub n: bool, // the last sum was a subtraction; only DAA looks at it
+    pub h: bool, // the low 4 bits overflowed; only DAA looks at it
+    pub c: bool, // the result did not fit in 8 bits, or 16 for the wider sums
 }
 
 impl Flags {
@@ -23,7 +17,7 @@ impl Flags {
             | ((self.c as u8) << 4)
     }
 
-    /// The low nibble is discarded, as the hardware does.
+    /// Throws away the bottom 4 bits, exactly like the real chip.
     pub const fn from_bits(value: u8) -> Self {
         Self {
             z: value & 0x80 != 0,
@@ -34,10 +28,7 @@ impl Flags {
     }
 }
 
-/// An 8-bit register operand.
-///
-/// Opcodes encode these in 3 bits as `B C D E H L (HL) A`, which is why
-/// `0x40..=0x7F` is one nested loop over the list.
+/// An 8-bit register. Opcodes always list them in the order `B C D E H L (HL) A`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reg8 {
     A,
@@ -60,22 +51,20 @@ pub enum Reg16 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Registers {
-    pub a: u8,
-    pub f: Flags,
-    pub b: u8,
-    pub c: u8,
-    pub d: u8,
-    pub e: u8,
-    pub h: u8,
-    pub l: u8,
-    pub sp: u16,
-    pub pc: u16,
+    pub a: u8,    // accumulator: almost every sum ends up here
+    pub f: Flags, // how the last sum turned out
+    pub b: u8,    // spare byte, pairs with c
+    pub c: u8,    // spare byte, pairs with b
+    pub d: u8,    // spare byte, pairs with e
+    pub e: u8,    // spare byte, pairs with d
+    pub h: u8,    // spare byte, pairs with l to point at memory
+    pub l: u8,    // spare byte, pairs with h to point at memory
+    pub sp: u16,  // stack pointer: top of the scratch pile
+    pub pc: u16,  // program counter: which byte the CPU runs next
 }
 
 impl Registers {
-    /// State the CGB boot ROM leaves behind, for booting without it.
-    ///
-    /// `A = 0x11` is how a game detects a Game Boy Color rather than a DMG.
+    /// Where the boot ROM leaves the CPU, so we can skip it. Games read `a = 0x11` to spot a Color.
     pub fn post_boot_cgb() -> Self {
         Self {
             a: 0x11,
@@ -87,7 +76,7 @@ impl Registers {
             h: 0x00,
             l: 0x0D,
             sp: 0xFFFE,
-            pc: 0x0100, // cartridge entry point
+            pc: 0x0100, // where the cartridge starts running
         }
     }
 

@@ -1,4 +1,4 @@
-//! The cartridge header at 0100-014F. Pan Docs: The Cartridge Header.
+//! The block at 0100-014F where every cartridge describes itself.
 
 use super::CartridgeError;
 
@@ -11,11 +11,11 @@ const HEADER_END: usize = 0x0150;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CgbFlag {
-    /// A DMG game. The CGB runs it in compatibility mode.
+    /// An original Game Boy game; a Color runs it in compatibility mode.
     None,
-    /// Uses CGB features but still runs on a DMG.
+    /// Uses Color features, but still works on an original Game Boy.
     Enhanced,
-    /// Refuses to run on a DMG.
+    /// Color only; it refuses to run on an original Game Boy.
     Only,
 }
 
@@ -34,7 +34,7 @@ impl Header {
             return Err(CartridgeError::TooSmall(rom.len()));
         }
 
-        // The CGB flag overlaps the last byte of the title field.
+        // The Color flag sits on the title's last byte, so Color titles are one character shorter.
         let cgb = match rom[CGB_FLAG] {
             0x80 => CgbFlag::Enhanced,
             0xC0 => CgbFlag::Only,

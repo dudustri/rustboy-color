@@ -32,35 +32,37 @@ pub enum Mode {
 }
 
 pub struct Ppu {
-    /// The finished picture, 4 bytes per pixel: red, green, blue, alpha.
-    pub framebuffer: Vec<u8>,
-    /// Turns true when a picture is complete, which is the host's cue to draw it.
-    pub frame_ready: bool,
-    vram: Vec<u8>,
-    oam: [u8; OAM_SIZE],
-    mode: Mode,
-    dot: u32,
-    lcdc: u8,
-    stat: u8,
-    scy: u8,
-    scx: u8,
-    ly: u8,
-    lyc: u8,
-    bgp: u8,
-    obp0: u8,
-    obp1: u8,
-    wy: u8,
-    wx: u8,
-    vbk: u8,
-    bcps: u8,
-    bcpd: [u8; 64],
-    ocps: u8,
-    ocpd: [u8; 64],
-    fetcher: Fetcher,
-    bg_fifo: PixelFifo,
-    obj_fifo: PixelFifo,
+    pub framebuffer: Vec<u8>, // the finished picture, 4 bytes per pixel: red, green, blue, alpha
+    pub frame_ready: bool,    // true when a picture is done: the host's cue to draw it
+    vram: Vec<u8>,            // 2 banks of tile pictures and maps, seen at 8000-9FFF
+    oam: [u8; OAM_SIZE],      // the 40 sprite entries, seen at FE00-FE9F
+    mode: Mode,               // which of the 4 stages of a line we are in
+    dot: u32,                 // ticks into the current line, 0 to 455
+
+    // registers: the knobs a game turns, each with its own address
+    lcdc: u8,       // FF40 main switch: screen on, window on, sprite size
+    stat: u8,       // FF41 what the screen is doing, and which events interrupt
+    scy: u8,        // FF42 background scrolled up by this much
+    scx: u8,        // FF43 background scrolled left by this much
+    ly: u8,         // FF44 the line being drawn right now, 0 to 153
+    lyc: u8,        // FF45 interrupt when ly reaches this line
+    bgp: u8,        // FF47 the 4 grey shades for the background, old Game Boy only
+    obp0: u8,       // FF48 grey shades for sprites using palette 0
+    obp1: u8,       // FF49 grey shades for sprites using palette 1
+    wy: u8,         // FF4A top edge of the window
+    wx: u8,         // FF4B left edge of the window, plus 7
+    vbk: u8,        // FF4F which of the 2 video RAM banks is on show
+    bcps: u8,       // FF68 which background colour slot FF69 will touch
+    bcpd: [u8; 64], // FF69 the 8 background palettes, 4 colours each
+    ocps: u8,       // FF6A which sprite colour slot FF6B will touch
+    ocpd: [u8; 64], // FF6B the 8 sprite palettes, 4 colours each
+
+    // the pixel pipeline, all still empty
+    fetcher: Fetcher,    // builds background pixels 8 at a time
+    bg_fifo: PixelFifo,  // background pixels waiting their turn
+    obj_fifo: PixelFifo, // sprite pixels waiting to be mixed in
     #[allow(dead_code, reason = "TODO(PR-16): read by the sprite fetcher")]
-    scan: SpriteScan,
+    scan: SpriteScan, // the sprites picked for this line
 }
 
 impl Ppu {

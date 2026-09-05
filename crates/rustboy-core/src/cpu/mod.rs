@@ -7,13 +7,11 @@ use crate::bus::Bus;
 use registers::Registers;
 
 pub struct Cpu {
-    pub regs: Registers,
-    /// The master switch: while this is false the CPU ignores every interrupt.
-    pub ime: bool,
-    /// `EI` only switches interrupts on after the following instruction has run.
-    pub ime_pending: bool,
-    pub halted: bool,
-    pub stopped: bool,
+    pub regs: Registers,   // the registers on the chip itself: a, f, b to l, sp, pc
+    pub ime: bool,         // master switch: while false the CPU ignores every interrupt
+    pub ime_pending: bool, // EI only takes effect after the next instruction
+    pub halted: bool,      // asleep until an interrupt arrives
+    pub stopped: bool,     // deeper sleep, also how the CGB changes speed
 }
 
 impl Cpu {

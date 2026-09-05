@@ -1,10 +1,10 @@
-//! Memory bank controllers. See `docs/architecture.md` 2.2.
+//! Cartridges hold more than fits in the address space; these chips swap the pieces in and out.
 
 use super::CartridgeError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mbc {
-    /// No mapper: 32 KiB flat. `writable` is only set by `Cartridge::test_ram`.
+    /// No chip at all, just a flat 32 KiB. Only `Cartridge::test_ram` sets `writable`.
     None { writable: bool },
     Mbc1 {
         rom_bank: u8,
@@ -48,16 +48,16 @@ impl Mbc {
         }
     }
 
-    /// Map a CPU address in 0000-7FFF onto an offset into the ROM image.
+    /// Turns an address the CPU asked for into a position in the ROM file.
     pub fn rom_offset(&self, addr: u16) -> usize {
         match self {
             Self::None { .. } => addr as usize,
-            // TODO(PR-20): bank number masking against the real ROM size.
+            // TODO(PR-20): wrap the bank number around the cartridge's real size.
             _ => todo!("PR-20: ROM banking"),
         }
     }
 
-    /// Map A000-BFFF onto external RAM, or `None` when RAM is disabled.
+    /// The same for save RAM, or `None` while the game has it switched off.
     pub fn ram_offset(&self, addr: u16) -> Option<usize> {
         match self {
             Self::None { .. } => Some((addr - 0xA000) as usize),
@@ -65,7 +65,7 @@ impl Mbc {
         }
     }
 
-    /// Writes into ROM space are mapper commands, not memory writes.
+    /// Writing to ROM stores nothing: it is how a game gives this chip orders.
     pub fn write_control(&mut self, _addr: u16, _value: u8) {
         match self {
             Self::None { .. } => {}

@@ -1,4 +1,4 @@
-//! Cartridge ROM, external RAM, and the mapper between them.
+//! The game cartridge: its ROM, its save RAM, and the chip that swaps banks between them.
 
 mod header;
 mod mbc;
@@ -10,7 +10,7 @@ use core::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CartridgeError {
-    /// Smaller than the header it must contain.
+    /// The file is too short to even hold a cartridge header.
     TooSmall(usize),
     UnsupportedMapper(u8),
 }
@@ -27,14 +27,14 @@ impl fmt::Display for CartridgeError {
 impl std::error::Error for CartridgeError {}
 
 pub struct Cartridge {
-    pub header: Header,
-    rom: Vec<u8>,
-    ram: Vec<u8>,
-    mbc: Mbc,
+    pub header: Header, // what the game says about itself
+    rom: Vec<u8>,       // the whole game file
+    ram: Vec<u8>,       // save data, kept alive by a battery in the cart
+    mbc: Mbc,           // the chip that swaps banks in and out
 }
 
 impl fmt::Debug for Cartridge {
-    /// Deliberately hand-written: deriving it would print the whole ROM.
+    /// Written by hand on purpose: deriving it would dump the entire ROM into panic messages.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cartridge")
             .field("title", &self.header.title)
@@ -58,7 +58,7 @@ impl Cartridge {
         })
     }
 
-    /// 32 KiB of writable flat memory, so unit tests can put opcodes anywhere.
+    /// A fake 32 KiB cartridge we can write to, so tests can place opcodes anywhere.
     pub fn test_ram() -> Self {
         Self {
             header: Header {
@@ -107,7 +107,7 @@ impl Cartridge {
         }
     }
 
-    /// Battery-backed RAM, for the host to persist.
+    /// The save data, for the host to keep on disk.
     pub fn ram(&self) -> &[u8] {
         &self.ram
     }

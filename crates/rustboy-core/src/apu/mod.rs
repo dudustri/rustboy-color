@@ -9,10 +9,9 @@ const REGISTER_COUNT: usize = 0x30;
 const MAX_QUEUED_SAMPLES: usize = (AUDIO_SAMPLE_RATE as usize) * 2;
 
 pub struct Apu {
-    registers: [u8; REGISTER_COUNT],
-    samples: Vec<f32>,
-    /// Counts in whole numbers, so deciding when to emit a sample never drifts.
-    sample_accumulator: u32,
+    registers: [u8; REGISTER_COUNT], // FF10-FF3F every sound control
+    samples: Vec<f32>,               // finished sound waiting for the host to collect
+    sample_accumulator: u32,         // counts in whole numbers so sample timing never drifts
 }
 
 impl Apu {

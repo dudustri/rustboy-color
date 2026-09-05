@@ -2,22 +2,19 @@
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Pixel {
-    /// Which of the 4 palette slots this pixel uses; the colour is looked up later.
-    pub color: u8,
-    pub palette: u8,
-    /// Who wins when a background pixel and a sprite pixel land on the same spot.
-    pub priority: bool,
+    pub color: u8,      // which of the 4 palette slots to use; the colour comes later
+    pub palette: u8,    // which palette to look it up in
+    pub priority: bool, // who wins when a background pixel and a sprite land on the same spot
 }
 
 const CAPACITY: usize = 16;
 
 #[derive(Debug)]
 pub struct PixelFifo {
-    /// Nothing reads this until the mixer is written.
     #[allow(dead_code, reason = "TODO(PR-14): read by push/pop")]
-    queue: [Pixel; CAPACITY],
-    head: usize,
-    len: usize,
+    queue: [Pixel; CAPACITY], // the ring of waiting pixels
+    head: usize, // where the next pixel comes out
+    len: usize,  // how many are waiting
 }
 
 impl PixelFifo {

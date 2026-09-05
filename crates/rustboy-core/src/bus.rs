@@ -18,20 +18,22 @@ const WRAM_BANKS: usize = 8;
 const HRAM_SIZE: usize = 0x7F;
 
 pub struct Bus {
-    pub cartridge: Option<Cartridge>,
-    pub ppu: Ppu,
-    pub apu: Apu,
-    pub timer: Timer,
-    pub joypad: Joypad,
-    pub serial: Serial,
-    pub interrupt_flag: u8,
-    pub interrupt_enable: u8,
-    pub double_speed: bool,
-    wram: Vec<u8>,
-    hram: [u8; HRAM_SIZE],
-    svbk: u8,
-    key1: u8,
-    t_cycles: u64,
+    pub cartridge: Option<Cartridge>, // the game, or None when nothing is plugged in
+    pub ppu: Ppu,                     // the screen
+    pub apu: Apu,                     // the sound chip
+    pub timer: Timer,                 // the counters a game uses to measure time
+    pub joypad: Joypad,               // the buttons
+    pub serial: Serial,               // the link cable port
+    pub double_speed: bool,           // true while the CGB runs its CPU twice as fast
+    wram: Vec<u8>,                    // 8 banks of work RAM, seen at C000-DFFF
+    hram: [u8; HRAM_SIZE],            // 127 fast bytes at FF80-FFFE, usable during DMA
+    t_cycles: u64,                    // ticks since power on
+
+    // registers that belong to no single chip
+    pub interrupt_flag: u8, // FF0F which interrupts are waiting to be handled
+    pub interrupt_enable: u8, // FFFF which interrupts the game allows
+    svbk: u8,               // FF70 which work RAM bank sits at D000-DFFF
+    key1: u8,               // FF4D ask for double speed, and report whether it is on
 }
 
 impl Bus {

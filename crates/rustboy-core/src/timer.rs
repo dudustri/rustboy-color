@@ -1,13 +1,12 @@
-//! DIV / TIMA. Pan Docs: Timer and Divider Registers.
+//! DIV and TIMA, the two counters a game uses to measure time.
 
 use crate::bus::IF_TIMER;
 
 pub struct Timer {
-    /// The 16-bit counter behind DIV. Reading DIV returns its high byte.
-    div: u16,
-    tima: u8,
-    tma: u8,
-    tac: u8,
+    div: u16, // FF04 counts up forever; a game only sees its top byte
+    tima: u8, // FF05 counts up at the speed tac picks
+    tma: u8,  // FF06 what tima restarts from after it overflows
+    tac: u8,  // FF07 timer on or off, and how fast
 }
 
 impl Timer {
@@ -26,8 +25,7 @@ impl Timer {
             let before = self.div;
             self.div = self.div.wrapping_add(1);
             if self.falling_edge(before, self.div) {
-                // TODO(PR-11): TIMA reload is delayed by 4 T-cycles on hardware,
-                // and writes during that window are ignored.
+                // TODO(PR-11): hardware waits 4 ticks to reload, ignoring writes in that gap.
                 let (next, overflow) = self.tima.overflowing_add(1);
                 if overflow {
                     self.tima = self.tma;
@@ -40,8 +38,7 @@ impl Timer {
         irq
     }
 
-    /// TIMA increments on the falling edge of a bit of the DIV counter, not on
-    /// a division of the clock. That is why writing DIV can tick TIMA.
+    /// TIMA steps when a chosen bit of DIV flips 1 to 0, so resetting DIV can tick it.
     fn falling_edge(&self, before: u16, after: u16) -> bool {
         if self.tac & 0x04 == 0 {
             return false;

@@ -12,15 +12,13 @@ pub enum FetchStep {
 
 #[derive(Debug, Default)]
 pub struct Fetcher {
-    pub step: FetchStep,
-    pub tile_x: u8,
-    pub tile_number: u8,
-    pub data_low: u8,
-    pub data_high: u8,
-    /// The window counts its own lines, separately from the line being drawn.
-    pub window_line: u8,
-    /// Every step lasts two dots; this marks the second one.
-    pub second_dot: bool,
+    pub step: FetchStep,  // which of the five steps we are on
+    pub tile_x: u8,       // how many tiles along the line we have fetched
+    pub tile_number: u8,  // which picture the map told us to draw
+    pub data_low: u8,     // first half of the 8 pixels
+    pub data_high: u8,    // second half; the two together give each pixel its colour
+    pub window_line: u8,  // the window counts its own lines, apart from the one being drawn
+    pub second_dot: bool, // every step lasts two dots; this marks the second
 }
 
 impl Fetcher {
