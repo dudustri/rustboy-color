@@ -46,6 +46,23 @@ impl Cpu {
             // 0xFB EI - switches interrupts on after the next instruction
             0xFB => self.ime_pending = true,
 
+            // LD A,(rr) and LD (rr),A - A moves to or from the byte a pair points at.
+            0x02 | 0x12 | 0x22 | 0x32 | 0x0A | 0x1A | 0x2A | 0x3A => {
+                let address = self.pointer(opcode);
+                if opcode & 0x08 == 0 {
+                    let value = self.regs.a;
+                    self.write8(bus, address, value);
+                } else {
+                    self.regs.a = self.read8(bus, address);
+                }
+            }
+
+            // LD r,n - the byte after the opcode goes straight into a register.
+            0x06 | 0x0E | 0x16 | 0x1E | 0x26 | 0x2E | 0x36 | 0x3E => {
+                let value = self.fetch8(bus);
+                self.write_operand(bus, opcode >> 3, value);
+            }
+
             // 0x40-0x7F LD r,r' - both operands come from the opcode's own bits.
             0x40..=0x7F => {
                 let value = self.read_operand(bus, opcode);
@@ -62,6 +79,23 @@ impl Cpu {
                 "opcode {opcode:#04X} at pc {:#06X}",
                 self.regs.pc.wrapping_sub(1)
             ),
+        }
+    }
+
+    // The pair named by bits 4 and 5. HL steps after being used, never before.
+    fn pointer(&mut self, opcode: u8) -> u16 {
+        let hl = self.regs.hl();
+        match (opcode >> 4) & 0x03 {
+            0 => self.regs.bc(),
+            1 => self.regs.de(),
+            2 => {
+                self.regs.set_hl(hl.wrapping_add(1));
+                hl
+            }
+            _ => {
+                self.regs.set_hl(hl.wrapping_sub(1));
+                hl
+            }
         }
     }
 
@@ -174,6 +208,72 @@ mod tests {
         }
         assert_eq!(operand(0x08), Some(Reg8::B)); // high bits ignored
         assert_eq!(operand(0x0F), Some(Reg8::A));
+    }
+
+    // Every immediate load must take its byte and cost the right time.
+    #[test]
+    fn immediate_loads_work() {
+        for destination in 0..=7u8 {
+            let opcode = 0x06 | (destination << 3);
+            let (mut cpu, mut bus) = loaded_cpu();
+            bus.write(0xD001, 0x5A); // the byte the opcode will pick up
+
+            let cycles = run(&mut cpu, &mut bus, opcode);
+            let through_memory = destination == 6;
+            assert_eq!(cycles, if through_memory { 12 } else { 8 }, "{opcode:#04X}");
+
+            let actual = match operand(destination) {
+                Some(register) => cpu.regs.read8(register),
+                None => bus.read(cpu.regs.hl()),
+            };
+            assert_eq!(actual, 0x5A, "{opcode:#04X}");
+            assert_eq!(cpu.regs.pc, 0xD002, "{opcode:#04X}");
+        }
+    }
+
+    // All eight forms move A through a pair, and cost one fetch plus one access.
+    #[test]
+    fn indirect_loads_work() {
+        for opcode in [0x02, 0x12, 0x22, 0x32, 0x0A, 0x1A, 0x2A, 0x3A] {
+            let (mut cpu, mut bus) = loaded_cpu();
+            cpu.regs.set_bc(0xC010);
+            cpu.regs.set_de(0xC020);
+            cpu.regs.set_hl(0xC030);
+            bus.write(0xC010, 0xB1);
+            bus.write(0xC020, 0xB2);
+            bus.write(0xC030, 0xB3);
+
+            let (address, stored) = match opcode & 0x30 {
+                0x00 => (0xC010, 0xB1),
+                0x10 => (0xC020, 0xB2),
+                _ => (0xC030, 0xB3),
+            };
+
+            let cycles = run(&mut cpu, &mut bus, opcode);
+            assert_eq!(cycles, 8, "{opcode:#04X}");
+
+            if opcode & 0x08 == 0 {
+                assert_eq!(bus.read(address), 0x77, "{opcode:#04X}"); // A was stored
+            } else {
+                assert_eq!(cpu.regs.a, stored, "{opcode:#04X}");
+            }
+        }
+    }
+
+    #[test]
+    fn hl_steps_after_the_access_not_before() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.set_hl(0xC030);
+        bus.write(0xC030, 0xB3);
+        run(&mut cpu, &mut bus, 0x2A); // LD A,(HL+)
+        assert_eq!(cpu.regs.a, 0xB3); // read the old address
+        assert_eq!(cpu.regs.hl(), 0xC031);
+
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.set_hl(0xC030);
+        run(&mut cpu, &mut bus, 0x32); // LD (HL-),A
+        assert_eq!(bus.read(0xC030), 0x77);
+        assert_eq!(cpu.regs.hl(), 0xC02F);
     }
 
     #[test]
