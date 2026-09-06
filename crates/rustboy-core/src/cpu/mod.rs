@@ -101,7 +101,6 @@ impl Cpu {
         self.write8(bus, self.regs.sp, value as u8);
     }
 
-    #[allow(dead_code, reason = "TODO(PR-09): used by RET and POP")]
     pub(crate) fn pop16(&mut self, bus: &mut Bus) -> u16 {
         let low = self.read8(bus, self.regs.sp) as u16;
         self.regs.sp = self.regs.sp.wrapping_add(1);

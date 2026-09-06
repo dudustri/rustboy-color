@@ -3,8 +3,19 @@
 //! Opcode reference: <https://gbdev.io/gb-opcodes/optables/>
 
 use super::Cpu;
-use super::registers::Reg8;
+use super::registers::{Reg8, Reg16};
 use crate::bus::Bus;
+
+// Opcodes number the pairs BC DE HL SP, but push and pop use AF in place of SP.
+fn pair(bits: u8, stack: bool) -> Reg16 {
+    match bits & 0x03 {
+        0 => Reg16::BC,
+        1 => Reg16::DE,
+        2 => Reg16::HL,
+        _ if stack => Reg16::AF,
+        _ => Reg16::SP,
+    }
+}
 
 // Opcodes number the registers B C D E H L (HL) A. The mask keeps this to 0 to 7.
 fn operand(bits: u8) -> Option<Reg8> {
@@ -45,6 +56,39 @@ impl Cpu {
 
             // 0xFB EI - switches interrupts on after the next instruction
             0xFB => self.ime_pending = true,
+
+            // LD rr,nn - the two bytes after the opcode go into a pair.
+            0x01 | 0x11 | 0x21 | 0x31 => {
+                let value = self.fetch16(bus);
+                self.regs.write16(pair(opcode >> 4, false), value);
+            }
+
+            // 0x08 LD (nn),SP - the stack pointer goes to memory, low byte first.
+            0x08 => {
+                let address = self.fetch16(bus);
+                let sp = self.regs.sp;
+                self.write8(bus, address, sp as u8);
+                self.write8(bus, address.wrapping_add(1), (sp >> 8) as u8);
+            }
+
+            // 0xF9 LD SP,HL - the idle cycle is the 16-bit value moving across.
+            0xF9 => {
+                self.idle(bus);
+                self.regs.sp = self.regs.hl();
+            }
+
+            // PUSH rr - the idle cycle is SP being stepped down before the writes.
+            0xC5 | 0xD5 | 0xE5 | 0xF5 => {
+                self.idle(bus);
+                let value = self.regs.read16(pair(opcode >> 4, true));
+                self.push16(bus, value);
+            }
+
+            // POP rr
+            0xC1 | 0xD1 | 0xE1 | 0xF1 => {
+                let value = self.pop16(bus);
+                self.regs.write16(pair(opcode >> 4, true), value);
+            }
 
             // LD A,(rr) and LD (rr),A - A moves to or from the byte a pair points at.
             0x02 | 0x12 | 0x22 | 0x32 | 0x0A | 0x1A | 0x2A | 0x3A => {
@@ -274,6 +318,76 @@ mod tests {
         run(&mut cpu, &mut bus, 0x32); // LD (HL-),A
         assert_eq!(bus.read(0xC030), 0x77);
         assert_eq!(cpu.regs.hl(), 0xC02F);
+    }
+
+    #[test]
+    fn sixteen_bit_immediates_work() {
+        for (opcode, register) in [
+            (0x01, Reg16::BC),
+            (0x11, Reg16::DE),
+            (0x21, Reg16::HL),
+            (0x31, Reg16::SP),
+        ] {
+            let (mut cpu, mut bus) = loaded_cpu();
+            bus.write(0xD001, 0x34); // low byte first, as the chip stores them
+            bus.write(0xD002, 0x12);
+            assert_eq!(run(&mut cpu, &mut bus, opcode), 12, "{opcode:#04X}");
+            assert_eq!(cpu.regs.read16(register), 0x1234, "{opcode:#04X}");
+            assert_eq!(cpu.regs.pc, 0xD003, "{opcode:#04X}");
+        }
+    }
+
+    #[test]
+    fn the_stack_pointer_can_be_written_to_memory() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.sp = 0xBEEF;
+        bus.write(0xD001, 0x00);
+        bus.write(0xD002, 0xC1);
+        assert_eq!(run(&mut cpu, &mut bus, 0x08), 20); // LD (C100),SP
+        assert_eq!(bus.read(0xC100), 0xEF);
+        assert_eq!(bus.read(0xC101), 0xBE);
+    }
+
+    #[test]
+    fn hl_can_become_the_stack_pointer() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.set_hl(0xC0DE);
+        assert_eq!(run(&mut cpu, &mut bus, 0xF9), 8); // LD SP,HL
+        assert_eq!(cpu.regs.sp, 0xC0DE);
+    }
+
+    #[test]
+    fn push_and_pop_round_trip_every_pair() {
+        for (push, pop, register) in [
+            (0xC5, 0xC1, Reg16::BC),
+            (0xD5, 0xD1, Reg16::DE),
+            (0xE5, 0xE1, Reg16::HL),
+            (0xF5, 0xF1, Reg16::AF),
+        ] {
+            let (mut cpu, mut bus) = loaded_cpu();
+            cpu.regs.sp = 0xDFF0;
+            let before = cpu.regs.read16(register);
+
+            assert_eq!(run(&mut cpu, &mut bus, push), 16, "{push:#04X}");
+            assert_eq!(cpu.regs.sp, 0xDFEE, "{push:#04X}");
+
+            cpu.regs.write16(register, 0x0000);
+            assert_eq!(run(&mut cpu, &mut bus, pop), 12, "{pop:#04X}");
+            assert_eq!(cpu.regs.read16(register), before, "{pop:#04X}");
+            assert_eq!(cpu.regs.sp, 0xDFF0, "{pop:#04X}");
+        }
+    }
+
+    // The flag register has no low nibble, so popping must not invent one.
+    #[test]
+    fn popping_af_keeps_the_flag_bits_clean() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.sp = 0xDFEE; // pop reads from here upward
+        bus.write(0xDFEE, 0xFF);
+        bus.write(0xDFEF, 0xFF);
+        run(&mut cpu, &mut bus, 0xF1); // POP AF
+        assert_eq!(cpu.regs.read16(Reg16::AF), 0xFFF0);
+        assert_eq!(cpu.regs.sp, 0xDFF0);
     }
 
     #[test]
