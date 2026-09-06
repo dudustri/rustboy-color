@@ -90,6 +90,37 @@ impl Cpu {
                 self.regs.write16(pair(opcode >> 4, true), value);
             }
 
+            // 0xEA / 0xFA LD (nn),A and LD A,(nn) - a full 16-bit address.
+            0xEA | 0xFA => {
+                let address = self.fetch16(bus);
+                self.move_a(bus, address, opcode & 0x10 != 0);
+            }
+
+            // 0xE0 / 0xF0 LDH (n),A and LDH A,(n) - one byte names a spot on the FF00 page.
+            0xE0 | 0xF0 => {
+                let offset = self.fetch8(bus) as u16;
+                self.move_a(bus, 0xFF00 + offset, opcode & 0x10 != 0);
+            }
+
+            // 0xE2 / 0xF2 LDH (C),A and LDH A,(C) - the same page, addressed by C.
+            0xE2 | 0xF2 => {
+                let address = 0xFF00 + self.regs.c as u16;
+                self.move_a(bus, address, opcode & 0x10 != 0);
+            }
+
+            // 0xF8 LD HL,SP+e8 - the only load that touches the flags.
+            0xF8 => {
+                let offset = self.fetch8(bus) as i8 as u16;
+                let sp = self.regs.sp;
+                self.idle(bus);
+                self.regs.set_hl(sp.wrapping_add(offset));
+                self.regs.f.z = false;
+                self.regs.f.n = false;
+                // Both carries come from adding the low bytes, not the whole address.
+                self.regs.f.h = (sp & 0x0F) + (offset & 0x0F) > 0x0F;
+                self.regs.f.c = (sp & 0xFF) + (offset & 0xFF) > 0xFF;
+            }
+
             // LD A,(rr) and LD (rr),A - A moves to or from the byte a pair points at.
             0x02 | 0x12 | 0x22 | 0x32 | 0x0A | 0x1A | 0x2A | 0x3A => {
                 let address = self.pointer(opcode);
@@ -123,6 +154,16 @@ impl Cpu {
                 "opcode {opcode:#04X} at pc {:#06X}",
                 self.regs.pc.wrapping_sub(1)
             ),
+        }
+    }
+
+    // Move A to or from one address. Bit 4 of the opcode picks the direction.
+    fn move_a(&mut self, bus: &mut Bus, address: u16, into_a: bool) {
+        if into_a {
+            self.regs.a = self.read8(bus, address);
+        } else {
+            let value = self.regs.a;
+            self.write8(bus, address, value);
         }
     }
 
@@ -388,6 +429,79 @@ mod tests {
         run(&mut cpu, &mut bus, 0xF1); // POP AF
         assert_eq!(cpu.regs.read16(Reg16::AF), 0xFFF0);
         assert_eq!(cpu.regs.sp, 0xDFF0);
+    }
+
+    #[test]
+    fn full_address_loads_work() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        bus.write(0xD001, 0x00);
+        bus.write(0xD002, 0xC1);
+        assert_eq!(run(&mut cpu, &mut bus, 0xEA), 16); // LD (C100),A
+        assert_eq!(bus.read(0xC100), 0x77);
+
+        let (mut cpu, mut bus) = loaded_cpu();
+        bus.write(0xD001, 0x00);
+        bus.write(0xD002, 0xC1);
+        bus.write(0xC100, 0x5E);
+        assert_eq!(run(&mut cpu, &mut bus, 0xFA), 16); // LD A,(C100)
+        assert_eq!(cpu.regs.a, 0x5E);
+    }
+
+    // The FF00 page is where the hardware registers live.
+    #[test]
+    fn the_high_page_is_reachable_by_one_byte() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        bus.write(0xD001, 0x80); // FF80, the start of high RAM
+        assert_eq!(run(&mut cpu, &mut bus, 0xE0), 12); // LDH (80),A
+        assert_eq!(bus.read(0xFF80), 0x77);
+
+        let (mut cpu, mut bus) = loaded_cpu();
+        bus.write(0xD001, 0x80);
+        bus.write(0xFF80, 0x3C);
+        assert_eq!(run(&mut cpu, &mut bus, 0xF0), 12); // LDH A,(80)
+        assert_eq!(cpu.regs.a, 0x3C);
+    }
+
+    #[test]
+    fn c_can_name_a_spot_on_the_high_page() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.c = 0x81;
+        assert_eq!(run(&mut cpu, &mut bus, 0xE2), 8); // LDH (C),A
+        assert_eq!(bus.read(0xFF81), 0x77);
+
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.c = 0x81;
+        bus.write(0xFF81, 0x2D);
+        assert_eq!(run(&mut cpu, &mut bus, 0xF2), 8); // LDH A,(C)
+        assert_eq!(cpu.regs.a, 0x2D);
+    }
+
+    #[test]
+    fn adding_to_the_stack_pointer_can_go_backwards() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.sp = 0xC100;
+        bus.write(0xD001, 0xFF); // -1 as a signed byte
+        assert_eq!(run(&mut cpu, &mut bus, 0xF8), 12);
+        assert_eq!(cpu.regs.hl(), 0xC0FF);
+    }
+
+    // Both carries come from the low bytes, which is the easy part to get wrong.
+    #[test]
+    fn the_stack_offset_carries_come_from_the_low_byte() {
+        let cases = [
+            (0xC00Fu16, 0x01u8, true, false),  // low nibble overflows
+            (0xC0FFu16, 0x01u8, true, true),   // low byte overflows too
+            (0xC000u16, 0x01u8, false, false), // neither
+        ];
+        for (sp, offset, half, carry) in cases {
+            let (mut cpu, mut bus) = loaded_cpu();
+            cpu.regs.sp = sp;
+            bus.write(0xD001, offset);
+            run(&mut cpu, &mut bus, 0xF8);
+            assert_eq!(cpu.regs.f.h, half, "{sp:#06X} + {offset:#04X}");
+            assert_eq!(cpu.regs.f.c, carry, "{sp:#06X} + {offset:#04X}");
+            assert!(!cpu.regs.f.z && !cpu.regs.f.n);
+        }
     }
 
     #[test]
