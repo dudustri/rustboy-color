@@ -150,6 +150,12 @@ impl Cpu {
                 self.alu(opcode >> 3, value);
             }
 
+            // ADD A,n through CP n - the same eight sums, against the byte after the opcode.
+            0xC6 | 0xCE | 0xD6 | 0xDE | 0xE6 | 0xEE | 0xF6 | 0xFE => {
+                let value = self.fetch8(bus);
+                self.alu(opcode >> 3, value);
+            }
+
             0xCB => {
                 let cb_opcode = self.fetch8(bus);
                 self.execute_cb(cb_opcode, bus);
@@ -531,6 +537,33 @@ mod tests {
         bus.write(0xC000, 0x07);
         run(&mut cpu, &mut bus, 0x96); // SUB (HL)
         assert_eq!(cpu.regs.a, 0x70);
+    }
+
+    // An immediate sum must give exactly what the register version gives.
+    #[test]
+    fn immediate_sums_match_the_register_ones() {
+        for kind in 0..=7u8 {
+            let immediate = 0xC6 | (kind << 3);
+            let register = 0x80 | (kind << 3); // against B
+
+            let (mut by_register, mut bus) = loaded_cpu();
+            by_register.regs.f.c = true; // so ADC and SBC have a carry to use
+            by_register.regs.b = 0x3C;
+            assert_eq!(run(&mut by_register, &mut bus, register), 4);
+
+            let (mut by_immediate, mut bus) = loaded_cpu();
+            by_immediate.regs.f.c = true;
+            bus.write(0xD001, 0x3C);
+            assert_eq!(
+                run(&mut by_immediate, &mut bus, immediate),
+                8,
+                "{immediate:#04X}"
+            );
+
+            assert_eq!(by_immediate.regs.a, by_register.regs.a, "{immediate:#04X}");
+            assert_eq!(by_immediate.regs.f, by_register.regs.f, "{immediate:#04X}");
+            assert_eq!(by_immediate.regs.pc, 0xD002, "{immediate:#04X}");
+        }
     }
 
     #[test]
