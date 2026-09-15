@@ -121,6 +121,28 @@ pub(crate) fn daa(a: u8, flags: Flags) -> (u8, Flags) {
     (result, flags)
 }
 
+// The eight CB rotates and shifts, picked by bits 3 to 5. C catches the bit that falls off.
+pub(crate) fn shift(kind: u8, value: u8, carry: bool) -> (u8, Flags) {
+    let carry = carry as u8;
+    let (result, out) = match kind & 0x07 {
+        0 => (value.rotate_left(1), value >> 7), // RLC: bit 7 wraps to bit 0
+        1 => (value.rotate_right(1), value & 1), // RRC: bit 0 wraps to bit 7
+        2 => ((value << 1) | carry, value >> 7), // RL: the old carry comes in
+        3 => ((value >> 1) | (carry << 7), value & 1), // RR
+        4 => (value << 1, value >> 7),           // SLA: a zero comes in
+        5 => ((value >> 1) | (value & 0x80), value & 1), // SRA: bit 7 stays put
+        6 => (value.rotate_left(4), 0),          // SWAP: the halves trade places
+        _ => (value >> 1, value & 1),            // SRL: a zero comes in at the top
+    };
+    let flags = Flags {
+        z: result == 0,
+        n: false,
+        h: false,
+        c: out != 0,
+    };
+    (result, flags)
+}
+
 impl Cpu {
     // Bits 3 to 5 of the opcode pick the sum: ADD ADC SUB SBC AND XOR OR CP.
     pub(crate) fn alu(&mut self, kind: u8, value: u8) {
@@ -310,6 +332,66 @@ mod tests {
                 assert!(flags.n, "{a} - {b}");
             }
         }
+    }
+
+    // One pattern through all eight, so each one's difference is visible side by side.
+    #[test]
+    fn each_shift_moves_the_bits_its_own_way() {
+        let v = 0b1000_0001;
+        assert_eq!(
+            shift(0, v, false),
+            (0b0000_0011, flags(false, false, false, true))
+        ); // RLC
+        assert_eq!(
+            shift(1, v, false),
+            (0b1100_0000, flags(false, false, false, true))
+        ); // RRC
+        assert_eq!(
+            shift(2, v, false),
+            (0b0000_0010, flags(false, false, false, true))
+        ); // RL
+        assert_eq!(
+            shift(3, v, false),
+            (0b0100_0000, flags(false, false, false, true))
+        ); // RR
+        assert_eq!(
+            shift(4, v, false),
+            (0b0000_0010, flags(false, false, false, true))
+        ); // SLA
+        assert_eq!(
+            shift(5, v, false),
+            (0b1100_0000, flags(false, false, false, true))
+        ); // SRA
+        assert_eq!(
+            shift(6, v, false),
+            (0b0001_1000, flags(false, false, false, false))
+        ); // SWAP
+        assert_eq!(
+            shift(7, v, false),
+            (0b0100_0000, flags(false, false, false, true))
+        ); // SRL
+    }
+
+    // Only RL and RR take the old carry in; the rest ignore it.
+    #[test]
+    fn only_rl_and_rr_use_the_incoming_carry() {
+        assert_eq!(shift(2, 0, true).0, 0b0000_0001);
+        assert_eq!(shift(3, 0, true).0, 0b1000_0000);
+        for kind in [0, 1, 4, 5, 6, 7] {
+            assert_eq!(shift(kind, 0, true).0, 0, "kind {kind}");
+        }
+    }
+
+    #[test]
+    fn shifting_everything_out_sets_zero() {
+        assert_eq!(
+            shift(4, 0x80, false),
+            (0x00, flags(true, false, false, true))
+        ); // SLA
+        assert_eq!(
+            shift(7, 0x01, false),
+            (0x00, flags(true, false, false, true))
+        ); // SRL
     }
 
     #[test]

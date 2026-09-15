@@ -409,8 +409,13 @@ impl Cpu {
                 self.write_operand(bus, opcode, value | bit);
             }
 
-            // TODO(PR-10): the rotates and shifts.
-            _ => todo!("CB opcode {opcode:#04X}"),
+            // Rotates and shifts - bits 3 to 5 pick which of the eight.
+            _ => {
+                let value = self.read_operand(bus, opcode);
+                let (result, flags) = alu::shift(opcode >> 3, value, self.regs.f.c);
+                self.regs.f = flags;
+                self.write_operand(bus, opcode, result);
+            }
         }
     }
 }
@@ -1149,6 +1154,29 @@ mod tests {
                 "CB {opcode:#04X}"
             );
             assert_eq!(cpu.regs.f.bits(), 0xF0, "CB {opcode:#04X}");
+        }
+    }
+
+    // All 64 must match the pure shift function, on every target, with the right timing.
+    #[test]
+    fn every_shift_opcode_works_on_every_target() {
+        for opcode in 0x00..=0x3Fu8 {
+            let target = opcode & 0x07;
+            for carry in [false, true] {
+                let (mut cpu, mut bus) = with_pattern(target, 0b1001_0110);
+                cpu.regs.f.c = carry;
+
+                let cycles = run_cb(&mut cpu, &mut bus, opcode);
+                assert_eq!(cycles, if target == 6 { 16 } else { 8 }, "CB {opcode:#04X}");
+
+                let (expected, flags) = alu::shift(opcode >> 3, 0b1001_0110, carry);
+                assert_eq!(
+                    read_target(&cpu, &mut bus, target),
+                    expected,
+                    "CB {opcode:#04X}"
+                );
+                assert_eq!(cpu.regs.f, flags, "CB {opcode:#04X}");
+            }
         }
     }
 
