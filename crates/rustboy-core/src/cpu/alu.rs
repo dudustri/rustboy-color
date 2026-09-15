@@ -90,6 +90,37 @@ pub(crate) fn add_offset(sp: u16, offset: u8) -> (u16, Flags) {
     (result, flags)
 }
 
+// Fix A after adding or subtracting two decimal numbers stored one digit per nibble.
+pub(crate) fn daa(a: u8, flags: Flags) -> (u8, Flags) {
+    let mut adjust = 0;
+    let mut carry = flags.c;
+    let result = if flags.n {
+        if flags.c {
+            adjust |= 0x60;
+        }
+        if flags.h {
+            adjust |= 0x06;
+        }
+        a.wrapping_sub(adjust)
+    } else {
+        if flags.c || a > 0x99 {
+            adjust |= 0x60;
+            carry = true;
+        }
+        if flags.h || a & 0x0F > 0x09 {
+            adjust |= 0x06;
+        }
+        a.wrapping_add(adjust)
+    };
+    let flags = Flags {
+        z: result == 0,
+        n: flags.n,
+        h: false,
+        c: carry,
+    };
+    (result, flags)
+}
+
 impl Cpu {
     // Bits 3 to 5 of the opcode pick the sum: ADD ADC SUB SBC AND XOR OR CP.
     pub(crate) fn alu(&mut self, kind: u8, value: u8) {
@@ -247,6 +278,38 @@ mod tests {
     fn a_negative_offset_moves_backwards() {
         assert_eq!(add_offset(0xC100, 0xFF).0, 0xC0FF);
         assert_eq!(add_offset(0xC100, 0x80).0, 0xC080); // -128
+    }
+
+    // Store a number from 0 to 99 as two decimal digits, one per nibble.
+    fn decimal(n: u32) -> u8 {
+        (((n / 10) << 4) | (n % 10)) as u8
+    }
+
+    // Every pair of two-digit numbers, added and then fixed, must give the decimal answer.
+    #[test]
+    fn daa_fixes_every_decimal_addition() {
+        for a in 0..100 {
+            for b in 0..100 {
+                let (sum, flags) = add(decimal(a), decimal(b), false);
+                let (fixed, flags) = daa(sum, flags);
+                assert_eq!(fixed, decimal((a + b) % 100), "{a} + {b}");
+                assert_eq!(flags.c, a + b >= 100, "{a} + {b}");
+                assert_eq!(flags.z, (a + b) % 100 == 0, "{a} + {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn daa_fixes_every_decimal_subtraction() {
+        for a in 0..100 {
+            for b in 0..100 {
+                let (difference, flags) = sub(decimal(a), decimal(b), false);
+                let (fixed, flags) = daa(difference, flags);
+                assert_eq!(fixed, decimal((a + 100 - b) % 100), "{a} - {b}");
+                assert_eq!(flags.c, a < b, "{a} - {b}");
+                assert!(flags.n, "{a} - {b}");
+            }
+        }
     }
 
     #[test]

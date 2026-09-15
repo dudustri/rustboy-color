@@ -197,6 +197,34 @@ impl Cpu {
                 self.write_operand(bus, opcode >> 3, result);
             }
 
+            // 0x27 DAA - turn the last sum back into two decimal digits.
+            0x27 => {
+                let (result, flags) = alu::daa(self.regs.a, self.regs.f);
+                self.regs.a = result;
+                self.regs.f = flags;
+            }
+
+            // 0x2F CPL - flip every bit of A.
+            0x2F => {
+                self.regs.a = !self.regs.a;
+                self.regs.f.n = true;
+                self.regs.f.h = true;
+            }
+
+            // 0x37 SCF - set the carry flag.
+            0x37 => {
+                self.regs.f.n = false;
+                self.regs.f.h = false;
+                self.regs.f.c = true;
+            }
+
+            // 0x3F CCF - flip the carry flag.
+            0x3F => {
+                self.regs.f.n = false;
+                self.regs.f.h = false;
+                self.regs.f.c = !self.regs.f.c;
+            }
+
             // ADD A,n through CP n - the same eight sums, against the byte after the opcode.
             0xC6 | 0xCE | 0xD6 | 0xDE | 0xE6 | 0xEE | 0xF6 | 0xFE => {
                 let value = self.fetch8(bus);
@@ -691,6 +719,41 @@ mod tests {
         assert_eq!(run(&mut cpu, &mut bus, 0xE8), 16);
         assert_eq!(cpu.regs.sp, 0xC0FE);
         assert!(!cpu.regs.f.z && !cpu.regs.f.n);
+    }
+
+    #[test]
+    fn cpl_flips_a_and_keeps_z_and_c() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.a = 0b1010_0101;
+        cpu.regs.f = Flags::from_bits(0x90); // Z and C on
+        assert_eq!(run(&mut cpu, &mut bus, 0x2F), 4);
+        assert_eq!(cpu.regs.a, 0b0101_1010);
+        assert_eq!(cpu.regs.f.bits(), 0xF0);
+    }
+
+    #[test]
+    fn scf_and_ccf_only_touch_the_carry_side() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.f = Flags::from_bits(0xE0); // Z N H on, C off
+        assert_eq!(run(&mut cpu, &mut bus, 0x37), 4); // SCF
+        assert_eq!(cpu.regs.f.bits(), 0x90); // Z kept, C set, N and H cleared
+
+        assert_eq!(run(&mut cpu, &mut bus, 0x3F), 4); // CCF
+        assert_eq!(cpu.regs.f.bits(), 0x80); // C flipped off
+        run(&mut cpu, &mut bus, 0x3F);
+        assert_eq!(cpu.regs.f.bits(), 0x90); // and back on
+    }
+
+    // A score of 19 plus 1 must read 20 on screen, not 1A.
+    #[test]
+    fn daa_after_add_gives_a_decimal_score() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.a = 0x19;
+        cpu.regs.b = 0x01;
+        run(&mut cpu, &mut bus, 0x80); // ADD A,B
+        assert_eq!(cpu.regs.a, 0x1A);
+        assert_eq!(run(&mut cpu, &mut bus, 0x27), 4); // DAA
+        assert_eq!(cpu.regs.a, 0x20);
     }
 
     #[test]
