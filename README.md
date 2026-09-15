@@ -1,55 +1,67 @@
 # rustboy-color
 
-A Game Boy Color emulator written in Rust, running in the browser (wasm32) and
-natively on x86_64 and aarch64 from a single emulation core.
+A Game Boy Color emulator written in Rust. The same core runs as a desktop app on
+x86_64 and aarch64, and in the browser through WebAssembly.
 
-**Status:** M1 of 6 — the desktop host runs. Not yet playable: only 6 of ~500 CPU instructions exist.
+**Status:** not playable yet. The CPU is finished. The screen, sound and cartridge
+banking come next.
 
-## Design
+## Run it
 
-See [`docs/architecture.md`](docs/architecture.md) for the hardware model, the
-memory map, and the reasoning behind each design decision.
-
-The short version:
-
-| Choice | Why |
-|---|---|
-| Tick-accurate timing, `bus.tick(4)` per M-cycle | compatibility with timing-sensitive games |
-| Pixel FIFO PPU | mid-scanline effects work; mode 3 length emerges naturally |
-| `rustboy-core` has zero dependencies and no I/O | the same core drives desktop and web |
-
-## Layout
-
-| Crate | Role |
-|---|---|
-| `rustboy-core` | CPU, PPU, APU, bus, cartridge — pure state machine, no dependencies |
-| `rustboy-splash` | the title screen, built from a photo at compile time |
-| `rustboy-frontend` | the `Host` trait and the frame driver, shared by every platform |
-| `rustboy-desktop` | winit + pixels *(audio in M5)* |
-| `rustboy-wasm` | wasm-bindgen + canvas + WebAudio *(PR-04)* |
-
-## Build
+**Desktop**
 
 ```sh
-cargo check --workspace
+cargo run -p rustboy-desktop                # title screen, then a blank screen
+cargo run -p rustboy-desktop -- game.gbc    # load a game
+```
+
+**Browser**
+
+Needs `wasm-pack` once: `cargo install wasm-pack`
+
+```sh
+cargo run -p rustboy-wasm                   # builds, then serves http://localhost:8080
+```
+
+## Controls
+
+| Key | Button |
+|---|---|
+| Arrows | D-pad |
+| A / X | A / B |
+| Enter | Start |
+| Shift | Select |
+| F11 | Fullscreen, desktop only |
+| Esc | Quit, desktop only |
+
+## Tests
+
+```sh
 cargo test --workspace
-cargo run -p rustboy-desktop                # title screen, then a blank LCD
-cargo run -p rustboy-desktop -- game.gbc    # load a cartridge
 ```
 
-For the browser, build the wasm once, then serve `web/`:
+## How it is built
 
-```sh
-wasm-pack build crates/rustboy-wasm --target web --out-dir ../../web/pkg
-cargo run -p rustboy-wasm                   # http://localhost:8080
-```
+| Crate | What it does |
+|---|---|
+| `rustboy-core` | The console itself: CPU, screen, sound, timer, cartridge. No dependencies. |
+| `rustboy-frontend` | The loop every platform shares. |
+| `rustboy-splash` | The title screen, made from a photo at build time. |
+| `rustboy-desktop` | The desktop app. |
+| `rustboy-wasm` | The browser version, plus a small local server. |
 
-Keys: arrows, A and X for the A and B buttons, Enter, Shift, F11 for fullscreen,
-Escape to quit.
+Three choices shape the design:
 
-See [`docs/build.md`](docs/build.md) for how the build fits together.
+- **Every chip moves tick by tick**, like the real hardware, so timing-sensitive games work.
+- **The screen is designed to draw one pixel at a time**, so effects that change mid-line work.
+- **The core never touches files, windows or speakers**, so the same code runs everywhere.
 
-## License
+## Docs
 
-Dual licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your
-option.
+| File | Covers |
+|---|---|
+| [`architecture.md`](docs/architecture.md) | How the hardware works, and why the emulator is built this way |
+| [`core-modules.md`](docs/core-modules.md) | What each part of the core does |
+| [`cpu-operation.md`](docs/cpu-operation.md) | How the CPU runs, with every instruction |
+| [`build.md`](docs/build.md) | How the build fits together |
+| [`roadmap.md`](docs/roadmap.md) | What is done and what comes next |
