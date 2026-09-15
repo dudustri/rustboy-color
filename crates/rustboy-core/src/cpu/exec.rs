@@ -110,15 +110,46 @@ impl Cpu {
 
             // 0xF8 LD HL,SP+e8 - the only load that touches the flags.
             0xF8 => {
-                let offset = self.fetch8(bus) as i8 as u16;
-                let sp = self.regs.sp;
+                let offset = self.fetch8(bus);
                 self.idle(bus);
-                self.regs.set_hl(sp.wrapping_add(offset));
-                self.regs.f.z = false;
-                self.regs.f.n = false;
-                // Both carries come from adding the low bytes, not the whole address.
-                self.regs.f.h = (sp & 0x0F) + (offset & 0x0F) > 0x0F;
-                self.regs.f.c = (sp & 0xFF) + (offset & 0xFF) > 0xFF;
+                let (result, flags) = alu::add_offset(self.regs.sp, offset);
+                self.regs.set_hl(result);
+                self.regs.f = flags;
+            }
+
+            // 0xE8 ADD SP,e8 - the same sum, kept in SP. One more idle cycle than 0xF8.
+            0xE8 => {
+                let offset = self.fetch8(bus);
+                self.idle(bus);
+                self.idle(bus);
+                let (result, flags) = alu::add_offset(self.regs.sp, offset);
+                self.regs.sp = result;
+                self.regs.f = flags;
+            }
+
+            // INC rr - no flags change at all, unlike the 8-bit version.
+            0x03 | 0x13 | 0x23 | 0x33 => {
+                let register = pair(opcode >> 4, false);
+                let value = self.regs.read16(register);
+                self.idle(bus);
+                self.regs.write16(register, value.wrapping_add(1));
+            }
+
+            // DEC rr
+            0x0B | 0x1B | 0x2B | 0x3B => {
+                let register = pair(opcode >> 4, false);
+                let value = self.regs.read16(register);
+                self.idle(bus);
+                self.regs.write16(register, value.wrapping_sub(1));
+            }
+
+            // ADD HL,rr
+            0x09 | 0x19 | 0x29 | 0x39 => {
+                let value = self.regs.read16(pair(opcode >> 4, false));
+                self.idle(bus);
+                let (result, flags) = alu::add_wide(self.regs.hl(), value, self.regs.f.z);
+                self.regs.set_hl(result);
+                self.regs.f = flags;
             }
 
             // LD A,(rr) and LD (rr),A - A moves to or from the byte a pair points at.
@@ -243,6 +274,7 @@ impl Cpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::registers::Flags;
 
     // Put a known value in every register, and point HL at writable memory.
     fn loaded_cpu() -> (Cpu, Bus) {
@@ -607,6 +639,58 @@ mod tests {
                 assert!(cpu.regs.f.c, "{opcode:#04X} must keep the carry");
             }
         }
+    }
+
+    // Counting a pair up or down is invisible to the flags.
+    #[test]
+    fn wide_inc_and_dec_touch_no_flags() {
+        for register in [Reg16::BC, Reg16::DE, Reg16::HL, Reg16::SP] {
+            let bits = match register {
+                Reg16::BC => 0x00,
+                Reg16::DE => 0x10,
+                Reg16::HL => 0x20,
+                _ => 0x30,
+            };
+            for (opcode, step) in [(0x03 | bits, 1u16), (0x0B | bits, 0xFFFF)] {
+                let (mut cpu, mut bus) = loaded_cpu();
+                cpu.regs.write16(register, 0xFFFF);
+                cpu.regs.f = Flags::from_bits(0xF0);
+
+                assert_eq!(run(&mut cpu, &mut bus, opcode), 8, "{opcode:#04X}");
+                assert_eq!(cpu.regs.read16(register), 0xFFFFu16.wrapping_add(step));
+                assert_eq!(
+                    cpu.regs.f.bits(),
+                    0xF0,
+                    "{opcode:#04X} must keep every flag"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn add_hl_works_for_every_pair() {
+        for (opcode, register) in [(0x09, Reg16::BC), (0x19, Reg16::DE), (0x39, Reg16::SP)] {
+            let (mut cpu, mut bus) = loaded_cpu();
+            cpu.regs.set_hl(0x1000);
+            cpu.regs.write16(register, 0x0234);
+            assert_eq!(run(&mut cpu, &mut bus, opcode), 8, "{opcode:#04X}");
+            assert_eq!(cpu.regs.hl(), 0x1234, "{opcode:#04X}");
+        }
+
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.set_hl(0x1234);
+        run(&mut cpu, &mut bus, 0x29); // ADD HL,HL doubles it
+        assert_eq!(cpu.regs.hl(), 0x2468);
+    }
+
+    #[test]
+    fn add_sp_moves_the_stack_and_costs_two_idle_cycles() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.sp = 0xC100;
+        bus.write(0xD001, 0xFE); // -2
+        assert_eq!(run(&mut cpu, &mut bus, 0xE8), 16);
+        assert_eq!(cpu.regs.sp, 0xC0FE);
+        assert!(!cpu.regs.f.z && !cpu.regs.f.n);
     }
 
     #[test]

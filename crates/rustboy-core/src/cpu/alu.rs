@@ -65,6 +65,31 @@ pub(crate) fn dec(value: u8, carry: bool) -> (u8, Flags) {
     (result, flags)
 }
 
+// Add two 16-bit numbers. H comes from bit 11, C from bit 15, and Z is left as it was.
+pub(crate) fn add_wide(a: u16, b: u16, zero: bool) -> (u16, Flags) {
+    let sum = a as u32 + b as u32;
+    let flags = Flags {
+        z: zero,
+        n: false,
+        h: (a & 0x0FFF) + (b & 0x0FFF) > 0x0FFF,
+        c: sum > 0xFFFF,
+    };
+    (sum as u16, flags)
+}
+
+// SP plus a signed byte. Both carries come from the low byte, not the whole address.
+pub(crate) fn add_offset(sp: u16, offset: u8) -> (u16, Flags) {
+    let result = sp.wrapping_add(offset as i8 as u16);
+    let low = offset as u16;
+    let flags = Flags {
+        z: false,
+        n: false,
+        h: (sp & 0x0F) + (low & 0x0F) > 0x0F,
+        c: (sp & 0xFF) + low > 0xFF,
+    };
+    (result, flags)
+}
+
 impl Cpu {
     // Bits 3 to 5 of the opcode pick the sum: ADD ADC SUB SBC AND XOR OR CP.
     pub(crate) fn alu(&mut self, kind: u8, value: u8) {
@@ -194,6 +219,34 @@ mod tests {
         assert!(!inc(0xFF, false).1.c);
         assert!(dec(0x00, true).1.c);
         assert!(!dec(0x00, false).1.c);
+    }
+
+    #[test]
+    fn wide_add_takes_its_half_carry_from_bit_11() {
+        assert_eq!(
+            add_wide(0x0FFF, 0x0001, false),
+            (0x1000, flags(false, false, true, false))
+        );
+        assert_eq!(
+            add_wide(0x00FF, 0x0001, false),
+            (0x0100, flags(false, false, false, false))
+        );
+    }
+
+    // Z is untouched even when the answer is zero.
+    #[test]
+    fn wide_add_keeps_z_as_it_was() {
+        assert_eq!(
+            add_wide(0xFFFF, 0x0001, false),
+            (0x0000, flags(false, false, true, true))
+        );
+        assert!(add_wide(0x1000, 0x0001, true).1.z);
+    }
+
+    #[test]
+    fn a_negative_offset_moves_backwards() {
+        assert_eq!(add_offset(0xC100, 0xFF).0, 0xC0FF);
+        assert_eq!(add_offset(0xC100, 0x80).0, 0xC080); // -128
     }
 
     #[test]
