@@ -75,6 +75,31 @@ impl Cpu {
                 self.call(bus, take);
             }
 
+            // 0xC9 RET - take the saved address off the stack and go back.
+            0xC9 => self.ret(bus),
+
+            // RET cc - checking the flag costs a cycle, whether it returns or not.
+            0xC0 | 0xC8 | 0xD0 | 0xD8 => {
+                self.idle(bus);
+                if self.condition(opcode) {
+                    self.ret(bus);
+                }
+            }
+
+            // 0xD9 RETI - return, and switch interrupts on at once, with no delay.
+            0xD9 => {
+                self.ret(bus);
+                self.ime = true;
+            }
+
+            // RST - a one-byte CALL to one of eight fixed addresses, named by the opcode bits.
+            0xC7 | 0xCF | 0xD7 | 0xDF | 0xE7 | 0xEF | 0xF7 | 0xFF => {
+                self.idle(bus);
+                let back = self.regs.pc;
+                self.push16(bus, back);
+                self.regs.pc = (opcode & 0x38) as u16;
+            }
+
             // 0xE9 JP HL - the address is already in HL, so nothing is read.
             0xE9 => self.regs.pc = self.regs.hl(),
 
@@ -292,6 +317,13 @@ impl Cpu {
             self.push16(bus, back);
             self.regs.pc = address;
         }
+    }
+
+    // Take the saved address off the stack and jump back to it.
+    fn ret(&mut self, bus: &mut Bus) {
+        let address = self.pop16(bus);
+        self.idle(bus);
+        self.regs.pc = address;
     }
 
     // Bits 3 and 4 of the opcode name the test: NZ Z NC C.
@@ -936,6 +968,90 @@ mod tests {
                     assert_eq!(cpu.regs.sp, 0xDFF0, "{opcode:#04X} must not push");
                 }
             }
+        }
+    }
+
+    // A CALL followed by a RET must land on the instruction after the CALL.
+    #[test]
+    fn ret_comes_back_to_after_the_call() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.sp = 0xDFF0;
+        bus.write(0xD001, 0x34);
+        bus.write(0xD002, 0x12);
+        bus.write(0x1234, 0xC9); // RET waiting at the destination
+
+        run(&mut cpu, &mut bus, 0xCD); // CALL 1234
+        let before = bus.cycles();
+        cpu.step(&mut bus);
+
+        assert_eq!(bus.cycles() - before, 16);
+        assert_eq!(cpu.regs.pc, 0xD003);
+        assert_eq!(cpu.regs.sp, 0xDFF0);
+    }
+
+    #[test]
+    fn conditional_ret_follows_its_flag() {
+        for (opcode, flag_is_z, wants_on) in [
+            (0xC0u8, true, false), // NZ
+            (0xC8, true, true),    // Z
+            (0xD0, false, false),  // NC
+            (0xD8, false, true),   // C
+        ] {
+            for passes in [true, false] {
+                let (mut cpu, mut bus) = loaded_cpu();
+                cpu.regs.sp = 0xDFEE;
+                bus.write(0xDFEE, 0x78); // a saved address of 0x5678
+                bus.write(0xDFEF, 0x56);
+                let on = if passes { wants_on } else { !wants_on };
+                cpu.regs.f.z = flag_is_z && on;
+                cpu.regs.f.c = !flag_is_z && on;
+
+                let cycles = run(&mut cpu, &mut bus, opcode);
+                if passes {
+                    assert_eq!(cycles, 20, "{opcode:#04X} taken");
+                    assert_eq!(cpu.regs.pc, 0x5678, "{opcode:#04X} taken");
+                    assert_eq!(cpu.regs.sp, 0xDFF0, "{opcode:#04X} taken");
+                } else {
+                    assert_eq!(cycles, 8, "{opcode:#04X} skipped");
+                    assert_eq!(cpu.regs.pc, 0xD001, "{opcode:#04X} skipped");
+                    assert_eq!(cpu.regs.sp, 0xDFEE, "{opcode:#04X} must not pop");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reti_returns_and_switches_interrupts_on_at_once() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.sp = 0xDFEE;
+        bus.write(0xDFEE, 0x78);
+        bus.write(0xDFEF, 0x56);
+        cpu.ime = false;
+
+        assert_eq!(run(&mut cpu, &mut bus, 0xD9), 16);
+        assert_eq!(cpu.regs.pc, 0x5678);
+        assert!(cpu.ime, "unlike EI there is no one-instruction wait");
+    }
+
+    #[test]
+    fn rst_calls_its_fixed_address() {
+        for (opcode, target) in [
+            (0xC7u8, 0x00u16),
+            (0xCF, 0x08),
+            (0xD7, 0x10),
+            (0xDF, 0x18),
+            (0xE7, 0x20),
+            (0xEF, 0x28),
+            (0xF7, 0x30),
+            (0xFF, 0x38),
+        ] {
+            let (mut cpu, mut bus) = loaded_cpu();
+            cpu.regs.sp = 0xDFF0;
+
+            assert_eq!(run(&mut cpu, &mut bus, opcode), 16, "{opcode:#04X}");
+            assert_eq!(cpu.regs.pc, target, "{opcode:#04X}");
+            assert_eq!(bus.read(0xDFEE), 0x01, "{opcode:#04X} saves 0xD001");
+            assert_eq!(bus.read(0xDFEF), 0xD0, "{opcode:#04X} saves 0xD001");
         }
     }
 
