@@ -252,6 +252,14 @@ impl Cpu {
                 self.write_operand(bus, opcode >> 3, result);
             }
 
+            // RLCA RRCA RLA RRA - the first four CB rotates, on A only, and Z always stays off.
+            0x07 | 0x0F | 0x17 | 0x1F => {
+                let (result, mut flags) = alu::shift(opcode >> 3, self.regs.a, self.regs.f.c);
+                flags.z = false;
+                self.regs.a = result;
+                self.regs.f = flags;
+            }
+
             // 0x27 DAA - turn the last sum back into two decimal digits.
             0x27 => {
                 let (result, flags) = alu::daa(self.regs.a, self.regs.f);
@@ -1176,6 +1184,28 @@ mod tests {
                     "CB {opcode:#04X}"
                 );
                 assert_eq!(cpu.regs.f, flags, "CB {opcode:#04X}");
+            }
+        }
+    }
+
+    // The CB versions happen to use the very same numbers after the CB byte.
+    #[test]
+    fn fast_rotates_match_the_cb_ones_except_for_z() {
+        for opcode in [0x07u8, 0x0F, 0x17, 0x1F] {
+            for (value, carry) in [(0b1001_0110u8, false), (0b1001_0110, true), (0, false)] {
+                let (mut fast, mut bus) = loaded_cpu();
+                fast.regs.a = value;
+                fast.regs.f.c = carry;
+                assert_eq!(run(&mut fast, &mut bus, opcode), 4, "{opcode:#04X}");
+
+                let (mut slow, mut bus) = loaded_cpu();
+                slow.regs.a = value;
+                slow.regs.f.c = carry;
+                assert_eq!(run_cb(&mut slow, &mut bus, opcode), 8, "CB {opcode:#04X}");
+
+                assert_eq!(fast.regs.a, slow.regs.a, "{opcode:#04X}");
+                assert_eq!(fast.regs.f.c, slow.regs.f.c, "{opcode:#04X}");
+                assert!(!fast.regs.f.z, "{opcode:#04X} must never set Z");
             }
         }
     }
