@@ -385,9 +385,33 @@ impl Cpu {
         }
     }
 
-    // TODO(PR-10): the bit instructions - rotates, shifts, SWAP, BIT, RES, SET.
-    fn execute_cb(&mut self, opcode: u8, _bus: &mut Bus) {
-        todo!("CB opcode {opcode:#04X}")
+    // CB opcodes split into two bits of kind, three bits of bit number, three bits of target.
+    fn execute_cb(&mut self, opcode: u8, bus: &mut Bus) {
+        let bit = 1 << ((opcode >> 3) & 0x07);
+        match opcode >> 6 {
+            // BIT b,r - Z says whether that bit is off. Nothing is written back.
+            1 => {
+                let value = self.read_operand(bus, opcode);
+                self.regs.f.z = value & bit == 0;
+                self.regs.f.n = false;
+                self.regs.f.h = true;
+            }
+
+            // RES b,r - turn one bit off.
+            2 => {
+                let value = self.read_operand(bus, opcode);
+                self.write_operand(bus, opcode, value & !bit);
+            }
+
+            // SET b,r - turn one bit on.
+            3 => {
+                let value = self.read_operand(bus, opcode);
+                self.write_operand(bus, opcode, value | bit);
+            }
+
+            // TODO(PR-10): the rotates and shifts.
+            _ => todo!("CB opcode {opcode:#04X}"),
+        }
     }
 }
 
@@ -1052,6 +1076,79 @@ mod tests {
             assert_eq!(cpu.regs.pc, target, "{opcode:#04X}");
             assert_eq!(bus.read(0xDFEE), 0x01, "{opcode:#04X} saves 0xD001");
             assert_eq!(bus.read(0xDFEF), 0xD0, "{opcode:#04X} saves 0xD001");
+        }
+    }
+
+    // Run CB followed by one opcode, and report how long it took.
+    fn run_cb(cpu: &mut Cpu, bus: &mut Bus, opcode: u8) -> u64 {
+        bus.write(0xD000, 0xCB);
+        bus.write(0xD001, opcode);
+        cpu.regs.pc = 0xD000;
+        let before = bus.cycles();
+        cpu.step(bus);
+        bus.cycles() - before
+    }
+
+    // Put the same pattern in one target, leaving HL pointing at 0xC000.
+    fn with_pattern(target: u8, pattern: u8) -> (Cpu, Bus) {
+        let (mut cpu, mut bus) = loaded_cpu();
+        match operand(target) {
+            Some(register) => cpu.regs.write8(register, pattern),
+            None => bus.write(0xC000, pattern),
+        }
+        (cpu, bus)
+    }
+
+    fn read_target(cpu: &Cpu, bus: &mut Bus, target: u8) -> u8 {
+        match operand(target) {
+            Some(register) => cpu.regs.read8(register),
+            None => bus.read(0xC000),
+        }
+    }
+
+    // All 64 BIT opcodes: Z reports the bit, H is on, C is left alone.
+    #[test]
+    fn bit_tests_every_bit_of_every_target() {
+        for opcode in 0x40..=0x7Fu8 {
+            let (bit, target) = ((opcode >> 3) & 0x07, opcode & 0x07);
+            let (mut cpu, mut bus) = with_pattern(target, 0b1010_0101);
+            cpu.regs.f.c = true;
+
+            let cycles = run_cb(&mut cpu, &mut bus, opcode);
+            assert_eq!(cycles, if target == 6 { 12 } else { 8 }, "CB {opcode:#04X}");
+
+            let is_on = 0b1010_0101 & (1 << bit) != 0;
+            assert_eq!(cpu.regs.f.z, !is_on, "CB {opcode:#04X}");
+            assert!(
+                cpu.regs.f.h && !cpu.regs.f.n && cpu.regs.f.c,
+                "CB {opcode:#04X}"
+            );
+            assert_eq!(read_target(&cpu, &mut bus, target), 0b1010_0101);
+        }
+    }
+
+    // All 128 RES and SET opcodes change exactly one bit and no flags.
+    #[test]
+    fn res_and_set_change_one_bit_and_no_flags() {
+        for opcode in 0x80..=0xFFu8 {
+            let (bit, target) = ((opcode >> 3) & 0x07, opcode & 0x07);
+            let (mut cpu, mut bus) = with_pattern(target, 0b1010_0101);
+            cpu.regs.f = Flags::from_bits(0xF0);
+
+            let cycles = run_cb(&mut cpu, &mut bus, opcode);
+            assert_eq!(cycles, if target == 6 { 16 } else { 8 }, "CB {opcode:#04X}");
+
+            let expected = if opcode < 0xC0 {
+                0b1010_0101 & !(1 << bit)
+            } else {
+                0b1010_0101 | (1 << bit)
+            };
+            assert_eq!(
+                read_target(&cpu, &mut bus, target),
+                expected,
+                "CB {opcode:#04X}"
+            );
+            assert_eq!(cpu.regs.f.bits(), 0xF0, "CB {opcode:#04X}");
         }
     }
 
