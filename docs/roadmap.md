@@ -73,6 +73,36 @@ recovered by reading the code.
 
 Anything documented in two places will disagree in two months.
 
+Every comment is one short line, in plain language.
+
+---
+
+### Tests
+
+No test sits inside `src/`. Every crate keeps its tests in `tests/`:
+
+| Kind | Where | Sees private parts |
+|---|---|---|
+| unit | `tests/unit/`, mirroring `src/` | yes |
+| integration | `tests/*.rs`, such as `test_roms.rs` | no, public parts only |
+
+| Code file | Its unit tests |
+|---|---|
+| `src/cpu/alu.rs` | `tests/unit/cpu/alu.rs` |
+| `src/cpu/mod.rs` | `tests/unit/cpu.rs` |
+| `src/lib.rs` or `src/main.rs` | `tests/unit/root.rs` |
+
+The code file links to its tests at the very end:
+
+```rust
+#[cfg(test)]
+#[path = "../../tests/unit/cpu/alu.rs"]
+mod tests;
+```
+
+Never name a file `main.rs` inside `tests/unit/`: Cargo would run it as a test
+program of its own.
+
 ---
 
 ### Cadence

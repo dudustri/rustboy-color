@@ -40,6 +40,15 @@ cargo run -p rustboy-wasm                   # builds, then serves http://localho
 cargo test --workspace
 ```
 
+The CPU is also checked against Blargg's test ROMs, which compare every instruction with a real
+Game Boy. They live in `test-roms/` as a git submodule, so clone with:
+
+```sh
+git clone --recursive https://github.com/dudustri/rustboy-color
+```
+
+Already cloned? Fetch them with `git submodule update --init`. Without them, those tests are skipped.
+
 ## How it is built
 
 | Crate | What it does |
