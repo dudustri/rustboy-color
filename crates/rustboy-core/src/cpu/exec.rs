@@ -2,8 +2,8 @@
 //!
 //! Opcode reference: <https://gbdev.io/gb-opcodes/optables/>
 
-use super::Cpu;
 use super::registers::{Reg8, Reg16};
+use super::{Cpu, alu};
 use crate::bus::Bus;
 
 // Opcodes number the pairs BC DE HL SP, but push and pop use AF in place of SP.
@@ -110,15 +110,46 @@ impl Cpu {
 
             // 0xF8 LD HL,SP+e8 - the only load that touches the flags.
             0xF8 => {
-                let offset = self.fetch8(bus) as i8 as u16;
-                let sp = self.regs.sp;
+                let offset = self.fetch8(bus);
                 self.idle(bus);
-                self.regs.set_hl(sp.wrapping_add(offset));
-                self.regs.f.z = false;
-                self.regs.f.n = false;
-                // Both carries come from adding the low bytes, not the whole address.
-                self.regs.f.h = (sp & 0x0F) + (offset & 0x0F) > 0x0F;
-                self.regs.f.c = (sp & 0xFF) + (offset & 0xFF) > 0xFF;
+                let (result, flags) = alu::add_offset(self.regs.sp, offset);
+                self.regs.set_hl(result);
+                self.regs.f = flags;
+            }
+
+            // 0xE8 ADD SP,e8 - the same sum, kept in SP. One more idle cycle than 0xF8.
+            0xE8 => {
+                let offset = self.fetch8(bus);
+                self.idle(bus);
+                self.idle(bus);
+                let (result, flags) = alu::add_offset(self.regs.sp, offset);
+                self.regs.sp = result;
+                self.regs.f = flags;
+            }
+
+            // INC rr - no flags change at all, unlike the 8-bit version.
+            0x03 | 0x13 | 0x23 | 0x33 => {
+                let register = pair(opcode >> 4, false);
+                let value = self.regs.read16(register);
+                self.idle(bus);
+                self.regs.write16(register, value.wrapping_add(1));
+            }
+
+            // DEC rr
+            0x0B | 0x1B | 0x2B | 0x3B => {
+                let register = pair(opcode >> 4, false);
+                let value = self.regs.read16(register);
+                self.idle(bus);
+                self.regs.write16(register, value.wrapping_sub(1));
+            }
+
+            // ADD HL,rr
+            0x09 | 0x19 | 0x29 | 0x39 => {
+                let value = self.regs.read16(pair(opcode >> 4, false));
+                self.idle(bus);
+                let (result, flags) = alu::add_wide(self.regs.hl(), value, self.regs.f.z);
+                self.regs.set_hl(result);
+                self.regs.f = flags;
             }
 
             // LD A,(rr) and LD (rr),A - A moves to or from the byte a pair points at.
@@ -142,6 +173,62 @@ impl Cpu {
             0x40..=0x7F => {
                 let value = self.read_operand(bus, opcode);
                 self.write_operand(bus, opcode >> 3, value);
+            }
+
+            // 0x80-0xBF - eight sums on A, each against a register or the byte HL points at.
+            0x80..=0xBF => {
+                let value = self.read_operand(bus, opcode);
+                self.alu(opcode >> 3, value);
+            }
+
+            // INC r - bits 3 to 5 name the register, as in the LD block.
+            0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => {
+                let value = self.read_operand(bus, opcode >> 3);
+                let (result, flags) = alu::inc(value, self.regs.f.c);
+                self.regs.f = flags;
+                self.write_operand(bus, opcode >> 3, result);
+            }
+
+            // DEC r
+            0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x35 | 0x3D => {
+                let value = self.read_operand(bus, opcode >> 3);
+                let (result, flags) = alu::dec(value, self.regs.f.c);
+                self.regs.f = flags;
+                self.write_operand(bus, opcode >> 3, result);
+            }
+
+            // 0x27 DAA - turn the last sum back into two decimal digits.
+            0x27 => {
+                let (result, flags) = alu::daa(self.regs.a, self.regs.f);
+                self.regs.a = result;
+                self.regs.f = flags;
+            }
+
+            // 0x2F CPL - flip every bit of A.
+            0x2F => {
+                self.regs.a = !self.regs.a;
+                self.regs.f.n = true;
+                self.regs.f.h = true;
+            }
+
+            // 0x37 SCF - set the carry flag.
+            0x37 => {
+                self.regs.f.n = false;
+                self.regs.f.h = false;
+                self.regs.f.c = true;
+            }
+
+            // 0x3F CCF - flip the carry flag.
+            0x3F => {
+                self.regs.f.n = false;
+                self.regs.f.h = false;
+                self.regs.f.c = !self.regs.f.c;
+            }
+
+            // ADD A,n through CP n - the same eight sums, against the byte after the opcode.
+            0xC6 | 0xCE | 0xD6 | 0xDE | 0xE6 | 0xEE | 0xF6 | 0xFE => {
+                let value = self.fetch8(bus);
+                self.alu(opcode >> 3, value);
             }
 
             0xCB => {
@@ -215,6 +302,7 @@ impl Cpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::registers::Flags;
 
     // Put a known value in every register, and point HL at writable memory.
     fn loaded_cpu() -> (Cpu, Bus) {
@@ -502,6 +590,170 @@ mod tests {
             assert_eq!(cpu.regs.f.c, carry, "{sp:#06X} + {offset:#04X}");
             assert!(!cpu.regs.f.z && !cpu.regs.f.n);
         }
+    }
+
+    // Every one of the 64 sums must cost one M-cycle, plus one more through HL.
+    #[test]
+    fn the_whole_alu_block_has_the_right_timing() {
+        for opcode in 0x80..=0xBFu8 {
+            let (mut cpu, mut bus) = loaded_cpu();
+            let through_memory = opcode & 0x07 == 6;
+            let cycles = run(&mut cpu, &mut bus, opcode);
+            assert_eq!(cycles, if through_memory { 8 } else { 4 }, "{opcode:#04X}");
+        }
+    }
+
+    #[test]
+    fn sums_use_the_right_operand() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        run(&mut cpu, &mut bus, 0x80); // ADD A,B
+        assert_eq!(cpu.regs.a, 0x77 + 0x11);
+
+        let (mut cpu, mut bus) = loaded_cpu();
+        bus.write(0xC000, 0x07);
+        run(&mut cpu, &mut bus, 0x96); // SUB (HL)
+        assert_eq!(cpu.regs.a, 0x70);
+    }
+
+    // An immediate sum must give exactly what the register version gives.
+    #[test]
+    fn immediate_sums_match_the_register_ones() {
+        for kind in 0..=7u8 {
+            let immediate = 0xC6 | (kind << 3);
+            let register = 0x80 | (kind << 3); // against B
+
+            let (mut by_register, mut bus) = loaded_cpu();
+            by_register.regs.f.c = true; // so ADC and SBC have a carry to use
+            by_register.regs.b = 0x3C;
+            assert_eq!(run(&mut by_register, &mut bus, register), 4);
+
+            let (mut by_immediate, mut bus) = loaded_cpu();
+            by_immediate.regs.f.c = true;
+            bus.write(0xD001, 0x3C);
+            assert_eq!(
+                run(&mut by_immediate, &mut bus, immediate),
+                8,
+                "{immediate:#04X}"
+            );
+
+            assert_eq!(by_immediate.regs.a, by_register.regs.a, "{immediate:#04X}");
+            assert_eq!(by_immediate.regs.f, by_register.regs.f, "{immediate:#04X}");
+            assert_eq!(by_immediate.regs.pc, 0xD002, "{immediate:#04X}");
+        }
+    }
+
+    // Registers cost one M-cycle; through HL it reads and then writes, so three.
+    #[test]
+    fn inc_and_dec_work_on_every_target() {
+        for target in 0..=7u8 {
+            for (base, step) in [(0x04u8, 1u8), (0x05, 0xFF)] {
+                let opcode = base | (target << 3);
+                let (mut cpu, mut bus) = loaded_cpu();
+                bus.write(0xC000, 0x99);
+                cpu.regs.f.c = true;
+
+                let before = match operand(target) {
+                    Some(register) => cpu.regs.read8(register),
+                    None => 0x99,
+                };
+                let cycles = run(&mut cpu, &mut bus, opcode);
+                assert_eq!(cycles, if target == 6 { 12 } else { 4 }, "{opcode:#04X}");
+
+                let after = match operand(target) {
+                    Some(register) => cpu.regs.read8(register),
+                    None => bus.read(cpu.regs.hl()),
+                };
+                assert_eq!(after, before.wrapping_add(step), "{opcode:#04X}");
+                assert!(cpu.regs.f.c, "{opcode:#04X} must keep the carry");
+            }
+        }
+    }
+
+    // Counting a pair up or down is invisible to the flags.
+    #[test]
+    fn wide_inc_and_dec_touch_no_flags() {
+        for register in [Reg16::BC, Reg16::DE, Reg16::HL, Reg16::SP] {
+            let bits = match register {
+                Reg16::BC => 0x00,
+                Reg16::DE => 0x10,
+                Reg16::HL => 0x20,
+                _ => 0x30,
+            };
+            for (opcode, step) in [(0x03 | bits, 1u16), (0x0B | bits, 0xFFFF)] {
+                let (mut cpu, mut bus) = loaded_cpu();
+                cpu.regs.write16(register, 0xFFFF);
+                cpu.regs.f = Flags::from_bits(0xF0);
+
+                assert_eq!(run(&mut cpu, &mut bus, opcode), 8, "{opcode:#04X}");
+                assert_eq!(cpu.regs.read16(register), 0xFFFFu16.wrapping_add(step));
+                assert_eq!(
+                    cpu.regs.f.bits(),
+                    0xF0,
+                    "{opcode:#04X} must keep every flag"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn add_hl_works_for_every_pair() {
+        for (opcode, register) in [(0x09, Reg16::BC), (0x19, Reg16::DE), (0x39, Reg16::SP)] {
+            let (mut cpu, mut bus) = loaded_cpu();
+            cpu.regs.set_hl(0x1000);
+            cpu.regs.write16(register, 0x0234);
+            assert_eq!(run(&mut cpu, &mut bus, opcode), 8, "{opcode:#04X}");
+            assert_eq!(cpu.regs.hl(), 0x1234, "{opcode:#04X}");
+        }
+
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.set_hl(0x1234);
+        run(&mut cpu, &mut bus, 0x29); // ADD HL,HL doubles it
+        assert_eq!(cpu.regs.hl(), 0x2468);
+    }
+
+    #[test]
+    fn add_sp_moves_the_stack_and_costs_two_idle_cycles() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.sp = 0xC100;
+        bus.write(0xD001, 0xFE); // -2
+        assert_eq!(run(&mut cpu, &mut bus, 0xE8), 16);
+        assert_eq!(cpu.regs.sp, 0xC0FE);
+        assert!(!cpu.regs.f.z && !cpu.regs.f.n);
+    }
+
+    #[test]
+    fn cpl_flips_a_and_keeps_z_and_c() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.a = 0b1010_0101;
+        cpu.regs.f = Flags::from_bits(0x90); // Z and C on
+        assert_eq!(run(&mut cpu, &mut bus, 0x2F), 4);
+        assert_eq!(cpu.regs.a, 0b0101_1010);
+        assert_eq!(cpu.regs.f.bits(), 0xF0);
+    }
+
+    #[test]
+    fn scf_and_ccf_only_touch_the_carry_side() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.f = Flags::from_bits(0xE0); // Z N H on, C off
+        assert_eq!(run(&mut cpu, &mut bus, 0x37), 4); // SCF
+        assert_eq!(cpu.regs.f.bits(), 0x90); // Z kept, C set, N and H cleared
+
+        assert_eq!(run(&mut cpu, &mut bus, 0x3F), 4); // CCF
+        assert_eq!(cpu.regs.f.bits(), 0x80); // C flipped off
+        run(&mut cpu, &mut bus, 0x3F);
+        assert_eq!(cpu.regs.f.bits(), 0x90); // and back on
+    }
+
+    // A score of 19 plus 1 must read 20 on screen, not 1A.
+    #[test]
+    fn daa_after_add_gives_a_decimal_score() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.a = 0x19;
+        cpu.regs.b = 0x01;
+        run(&mut cpu, &mut bus, 0x80); // ADD A,B
+        assert_eq!(cpu.regs.a, 0x1A);
+        assert_eq!(run(&mut cpu, &mut bus, 0x27), 4); // DAA
+        assert_eq!(cpu.regs.a, 0x20);
     }
 
     #[test]

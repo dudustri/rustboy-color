@@ -1,5 +1,6 @@
 //! The SM83 processor. Each memory access ticks the rest of the machine first, as hardware does.
 
+mod alu;
 pub mod exec;
 pub mod registers;
 
