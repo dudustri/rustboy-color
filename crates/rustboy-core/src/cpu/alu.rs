@@ -41,6 +41,30 @@ pub(crate) fn logic(result: u8, half: bool) -> (u8, Flags) {
     (result, flags)
 }
 
+// Add one. The carry flag is left as it was.
+pub(crate) fn inc(value: u8, carry: bool) -> (u8, Flags) {
+    let result = value.wrapping_add(1);
+    let flags = Flags {
+        z: result == 0,
+        n: false,
+        h: value & 0x0F == 0x0F,
+        c: carry,
+    };
+    (result, flags)
+}
+
+// Subtract one. The carry flag is left as it was.
+pub(crate) fn dec(value: u8, carry: bool) -> (u8, Flags) {
+    let result = value.wrapping_sub(1);
+    let flags = Flags {
+        z: result == 0,
+        n: true,
+        h: value & 0x0F == 0x00,
+        c: carry,
+    };
+    (result, flags)
+}
+
 impl Cpu {
     // Bits 3 to 5 of the opcode pick the sum: ADD ADC SUB SBC AND XOR OR CP.
     pub(crate) fn alu(&mut self, kind: u8, value: u8) {
@@ -148,6 +172,28 @@ mod tests {
             logic(0x5A, false),
             (0x5A, flags(false, false, false, false))
         );
+    }
+
+    #[test]
+    fn inc_notices_the_half_carry_and_wraps() {
+        assert_eq!(inc(0x0F, false), (0x10, flags(false, false, true, false)));
+        assert_eq!(inc(0xFF, false), (0x00, flags(true, false, true, false)));
+    }
+
+    #[test]
+    fn dec_notices_the_half_borrow_and_wraps() {
+        assert_eq!(dec(0x10, false), (0x0F, flags(false, true, true, false)));
+        assert_eq!(dec(0x01, false), (0x00, flags(true, true, false, false)));
+        assert_eq!(dec(0x00, false), (0xFF, flags(false, true, true, false)));
+    }
+
+    // Wrapping past zero must not touch C, in either direction.
+    #[test]
+    fn inc_and_dec_leave_the_carry_alone() {
+        assert!(inc(0xFF, true).1.c);
+        assert!(!inc(0xFF, false).1.c);
+        assert!(dec(0x00, true).1.c);
+        assert!(!dec(0x00, false).1.c);
     }
 
     #[test]

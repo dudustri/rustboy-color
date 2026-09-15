@@ -2,8 +2,8 @@
 //!
 //! Opcode reference: <https://gbdev.io/gb-opcodes/optables/>
 
-use super::Cpu;
 use super::registers::{Reg8, Reg16};
+use super::{Cpu, alu};
 use crate::bus::Bus;
 
 // Opcodes number the pairs BC DE HL SP, but push and pop use AF in place of SP.
@@ -148,6 +148,22 @@ impl Cpu {
             0x80..=0xBF => {
                 let value = self.read_operand(bus, opcode);
                 self.alu(opcode >> 3, value);
+            }
+
+            // INC r - bits 3 to 5 name the register, as in the LD block.
+            0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => {
+                let value = self.read_operand(bus, opcode >> 3);
+                let (result, flags) = alu::inc(value, self.regs.f.c);
+                self.regs.f = flags;
+                self.write_operand(bus, opcode >> 3, result);
+            }
+
+            // DEC r
+            0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x35 | 0x3D => {
+                let value = self.read_operand(bus, opcode >> 3);
+                let (result, flags) = alu::dec(value, self.regs.f.c);
+                self.regs.f = flags;
+                self.write_operand(bus, opcode >> 3, result);
             }
 
             // ADD A,n through CP n - the same eight sums, against the byte after the opcode.
@@ -563,6 +579,33 @@ mod tests {
             assert_eq!(by_immediate.regs.a, by_register.regs.a, "{immediate:#04X}");
             assert_eq!(by_immediate.regs.f, by_register.regs.f, "{immediate:#04X}");
             assert_eq!(by_immediate.regs.pc, 0xD002, "{immediate:#04X}");
+        }
+    }
+
+    // Registers cost one M-cycle; through HL it reads and then writes, so three.
+    #[test]
+    fn inc_and_dec_work_on_every_target() {
+        for target in 0..=7u8 {
+            for (base, step) in [(0x04u8, 1u8), (0x05, 0xFF)] {
+                let opcode = base | (target << 3);
+                let (mut cpu, mut bus) = loaded_cpu();
+                bus.write(0xC000, 0x99);
+                cpu.regs.f.c = true;
+
+                let before = match operand(target) {
+                    Some(register) => cpu.regs.read8(register),
+                    None => 0x99,
+                };
+                let cycles = run(&mut cpu, &mut bus, opcode);
+                assert_eq!(cycles, if target == 6 { 12 } else { 4 }, "{opcode:#04X}");
+
+                let after = match operand(target) {
+                    Some(register) => cpu.regs.read8(register),
+                    None => bus.read(cpu.regs.hl()),
+                };
+                assert_eq!(after, before.wrapping_add(step), "{opcode:#04X}");
+                assert!(cpu.regs.f.c, "{opcode:#04X} must keep the carry");
+            }
         }
     }
 
