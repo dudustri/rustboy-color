@@ -48,6 +48,18 @@ impl Cpu {
                 self.regs.pc = addr;
             }
 
+            // JP cc,nn - the address is always read; a jump that happens costs one more cycle.
+            0xC2 | 0xCA | 0xD2 | 0xDA => {
+                let address = self.fetch16(bus);
+                if self.condition(opcode) {
+                    self.idle(bus);
+                    self.regs.pc = address;
+                }
+            }
+
+            // 0xE9 JP HL - the address is already in HL, so nothing is read.
+            0xE9 => self.regs.pc = self.regs.hl(),
+
             // 0xF3 DI
             0xF3 => {
                 self.ime = false;
@@ -241,6 +253,16 @@ impl Cpu {
                 "opcode {opcode:#04X} at pc {:#06X}",
                 self.regs.pc.wrapping_sub(1)
             ),
+        }
+    }
+
+    // Bits 3 and 4 of the opcode name the test: NZ Z NC C.
+    fn condition(&self, opcode: u8) -> bool {
+        match (opcode >> 3) & 0x03 {
+            0 => !self.regs.f.z,
+            1 => self.regs.f.z,
+            2 => !self.regs.f.c,
+            _ => self.regs.f.c,
         }
     }
 
@@ -754,6 +776,47 @@ mod tests {
         assert_eq!(cpu.regs.a, 0x1A);
         assert_eq!(run(&mut cpu, &mut bus, 0x27), 4); // DAA
         assert_eq!(cpu.regs.a, 0x20);
+    }
+
+    // Each test flag on and off: a jump that happens costs 16, one that does not costs 12.
+    #[test]
+    fn conditional_jumps_follow_their_flag() {
+        for (opcode, z, c) in [
+            (0xC2u8, false, false), // NZ
+            (0xCA, true, false),    // Z
+            (0xD2, false, false),   // NC
+            (0xDA, false, true),    // C
+        ] {
+            for passes in [true, false] {
+                let (mut cpu, mut bus) = loaded_cpu();
+                cpu.regs.f.z = if passes { z } else { !z };
+                cpu.regs.f.c = if passes { c } else { !c };
+                if opcode == 0xC2 || opcode == 0xCA {
+                    cpu.regs.f.c = false; // only Z matters here
+                } else {
+                    cpu.regs.f.z = false; // only C matters here
+                }
+                bus.write(0xD001, 0x34);
+                bus.write(0xD002, 0x12);
+
+                let cycles = run(&mut cpu, &mut bus, opcode);
+                if passes {
+                    assert_eq!(cycles, 16, "{opcode:#04X} taken");
+                    assert_eq!(cpu.regs.pc, 0x1234, "{opcode:#04X} taken");
+                } else {
+                    assert_eq!(cycles, 12, "{opcode:#04X} skipped");
+                    assert_eq!(cpu.regs.pc, 0xD003, "{opcode:#04X} skipped");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn jp_hl_is_a_single_cycle() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.set_hl(0x4567);
+        assert_eq!(run(&mut cpu, &mut bus, 0xE9), 4);
+        assert_eq!(cpu.regs.pc, 0x4567);
     }
 
     #[test]
