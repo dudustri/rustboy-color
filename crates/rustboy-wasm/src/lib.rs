@@ -74,7 +74,7 @@ fn canvas_context(canvas_id: &str) -> Result<CanvasRenderingContext2d, JsValue> 
         .ok_or_else(|| JsValue::from_str("no canvas with that id"))?
         .dyn_into()?;
 
-    // The canvas holds one console pixel each; CSS stretches it up.
+    // The canvas is the console's real size; the page's CSS stretches it to fit.
     canvas.set_width(SCREEN_WIDTH as u32);
     canvas.set_height(SCREEN_HEIGHT as u32);
 

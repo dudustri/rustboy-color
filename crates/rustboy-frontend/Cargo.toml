@@ -3,7 +3,6 @@ name = "rustboy-frontend"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "The shared host layer: drives the console and the title screen for every platform."

@@ -26,10 +26,10 @@ pub struct Bus {
     pub serial: Serial,               // the link cable port
     pub double_speed: bool,           // true while the CGB runs its CPU twice as fast
     wram: Vec<u8>,                    // 8 banks of work RAM, seen at C000-DFFF
-    hram: [u8; HRAM_SIZE],            // 127 fast bytes at FF80-FFFE, usable during DMA
+    hram: [u8; HRAM_SIZE],            // 127 bytes of high RAM at FF80-FFFE
     t_cycles: u64,                    // ticks since power on
 
-    // registers that belong to no single chip
+    // registers the CPU chip keeps for itself: interrupts, RAM banking, speed
     pub interrupt_flag: u8, // FF0F which interrupts are waiting to be handled
     pub interrupt_enable: u8, // FFFF which interrupts the game allows
     svbk: u8,               // FF70 which work RAM bank sits at D000-DFFF
@@ -82,6 +82,17 @@ impl Bus {
         self.interrupt_flag |= self.timer.tick(t_cycles);
         self.interrupt_flag |= self.serial.tick(t_cycles);
         self.interrupt_flag |= self.joypad.take_interrupt();
+    }
+
+    /// Whether a game has asked, through KEY1, for the next STOP to change speed.
+    pub fn speed_switch_armed(&self) -> bool {
+        self.key1 & 0x01 != 0
+    }
+
+    /// Flip between normal and double speed, and clear the request.
+    pub fn switch_speed(&mut self) {
+        self.double_speed = !self.double_speed;
+        self.key1 = 0;
     }
 
     pub fn request_interrupt(&mut self, mask: u8) {
@@ -144,7 +155,7 @@ impl Bus {
             0xFF0F => self.interrupt_flag | 0xE0,
             0xFF10..=0xFF3F => self.apu.read(addr),
             0xFF40..=0xFF4B => self.ppu.read_register(addr),
-            0xFF4D => self.key1 | if self.double_speed { 0x80 } else { 0x00 },
+            0xFF4D => 0x7E | self.key1 | if self.double_speed { 0x80 } else { 0x00 },
             0xFF4F => self.ppu.read_register(addr),
             0xFF51..=0xFF55 => 0xFF, // TODO(PR-18): HDMA
             0xFF68..=0xFF6B => self.ppu.read_register(addr),

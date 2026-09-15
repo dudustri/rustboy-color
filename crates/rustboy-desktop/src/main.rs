@@ -20,7 +20,7 @@ use winit::window::{Fullscreen, Window, WindowButtons, WindowId};
 
 const SCALE: u32 = 4; // every console pixel becomes a 4 by 4 block
 
-// One frame on the real console: 70,224 ticks at 4,194,304 a second, just under 59.73 a second.
+// One console frame: 70,224 ticks at 4,194,304 a second, so about 59.73 frames a second.
 const FRAME_TIME: Duration =
     Duration::from_nanos((T_CYCLES_PER_FRAME as u64 * 1_000_000_000) / T_CYCLES_PER_SECOND as u64);
 
@@ -215,7 +215,7 @@ fn main() {
         }
     };
 
-    // Replaced each round by a deadline for the next frame.
+    // Only a starting value; about_to_wait sets a deadline for every frame.
     event_loop.set_control_flow(ControlFlow::Poll);
 
     if let Err(error) = event_loop.run_app(&mut app) {
