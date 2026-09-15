@@ -144,6 +144,12 @@ impl Cpu {
                 self.write_operand(bus, opcode >> 3, value);
             }
 
+            // 0x80-0xBF - eight sums on A, each against a register or the byte HL points at.
+            0x80..=0xBF => {
+                let value = self.read_operand(bus, opcode);
+                self.alu(opcode >> 3, value);
+            }
+
             0xCB => {
                 let cb_opcode = self.fetch8(bus);
                 self.execute_cb(cb_opcode, bus);
@@ -502,6 +508,29 @@ mod tests {
             assert_eq!(cpu.regs.f.c, carry, "{sp:#06X} + {offset:#04X}");
             assert!(!cpu.regs.f.z && !cpu.regs.f.n);
         }
+    }
+
+    // Every one of the 64 sums must cost one M-cycle, plus one more through HL.
+    #[test]
+    fn the_whole_alu_block_has_the_right_timing() {
+        for opcode in 0x80..=0xBFu8 {
+            let (mut cpu, mut bus) = loaded_cpu();
+            let through_memory = opcode & 0x07 == 6;
+            let cycles = run(&mut cpu, &mut bus, opcode);
+            assert_eq!(cycles, if through_memory { 8 } else { 4 }, "{opcode:#04X}");
+        }
+    }
+
+    #[test]
+    fn sums_use_the_right_operand() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        run(&mut cpu, &mut bus, 0x80); // ADD A,B
+        assert_eq!(cpu.regs.a, 0x77 + 0x11);
+
+        let (mut cpu, mut bus) = loaded_cpu();
+        bus.write(0xC000, 0x07);
+        run(&mut cpu, &mut bus, 0x96); // SUB (HL)
+        assert_eq!(cpu.regs.a, 0x70);
     }
 
     #[test]
