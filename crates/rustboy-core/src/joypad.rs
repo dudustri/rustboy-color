@@ -45,6 +45,11 @@ impl Joypad {
         }
     }
 
+    /// Whether any button is held, which is what wakes the CPU from STOP.
+    pub fn any_held(&self) -> bool {
+        self.held != 0
+    }
+
     pub fn set_button(&mut self, button: Button, pressed: bool) {
         let mask = 1 << button.bit();
         let was_held = self.held & mask != 0;

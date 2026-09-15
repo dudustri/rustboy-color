@@ -6,7 +6,7 @@ pub struct Flags {
     pub z: bool, // the last sum came out zero
     pub n: bool, // the last sum was a subtraction; only DAA looks at it
     pub h: bool, // the low 4 bits overflowed; only DAA looks at it
-    pub c: bool, // the result did not fit in 8 bits, or 16 for the wider sums
+    pub c: bool, // a sum overflowed or borrowed, or a shift pushed a bit off the end
 }
 
 impl Flags {

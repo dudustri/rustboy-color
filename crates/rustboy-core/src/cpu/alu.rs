@@ -1,4 +1,4 @@
-//! The eight sums on A, and the flags each one leaves behind.
+//! The CPU's maths: every sum, shift and flag rule, kept apart so it can be tested alone.
 
 use super::Cpu;
 use super::registers::Flags;
@@ -90,7 +90,7 @@ pub(crate) fn add_offset(sp: u16, offset: u8) -> (u16, Flags) {
     (result, flags)
 }
 
-// Fix A after adding or subtracting two decimal numbers stored one digit per nibble.
+// Fix A after adding or subtracting two decimal numbers stored one digit per half byte.
 pub(crate) fn daa(a: u8, flags: Flags) -> (u8, Flags) {
     let mut adjust = 0;
     let mut carry = flags.c;
@@ -128,7 +128,7 @@ pub(crate) fn shift(kind: u8, value: u8, carry: bool) -> (u8, Flags) {
         0 => (value.rotate_left(1), value >> 7), // RLC: bit 7 wraps to bit 0
         1 => (value.rotate_right(1), value & 1), // RRC: bit 0 wraps to bit 7
         2 => ((value << 1) | carry, value >> 7), // RL: the old carry comes in
-        3 => ((value >> 1) | (carry << 7), value & 1), // RR
+        3 => ((value >> 1) | (carry << 7), value & 1), // RR: the old carry comes in at the top
         4 => (value << 1, value >> 7),           // SLA: a zero comes in
         5 => ((value >> 1) | (value & 0x80), value & 1), // SRA: bit 7 stays put
         6 => (value.rotate_left(4), 0),          // SWAP: the halves trade places
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(add_offset(0xC100, 0x80).0, 0xC080); // -128
     }
 
-    // Store a number from 0 to 99 as two decimal digits, one per nibble.
+    // Store a number from 0 to 99 as two decimal digits, one per half byte.
     fn decimal(n: u32) -> u8 {
         (((n / 10) << 4) | (n % 10)) as u8
     }

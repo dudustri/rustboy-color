@@ -27,7 +27,7 @@ fn operand(bits: u8) -> Option<Reg8> {
         4 => Some(Reg8::H),
         5 => Some(Reg8::L),
         6 => None,          // the byte HL points at, not a register
-        _ => Some(Reg8::A), // because & 0x07
+        _ => Some(Reg8::A), // 7, the only value left after & 0x07
     }
 }
 
@@ -37,11 +37,29 @@ impl Cpu {
             // 0x00 NOP
             0x00 => {}
 
-            // 0x76 HALT
-            // TODO(PR-11): the HALT bug - interrupts off with one waiting must not advance PC.
-            0x76 => self.halted = true,
+            // 0x10 STOP - changes speed if a game asked for it, otherwise sleeps until a button.
+            0x10 => {
+                self.fetch8(bus); // STOP is followed by a byte that nothing uses
+                bus.timer.reset_div();
+                if bus.speed_switch_armed() {
+                    bus.switch_speed();
+                } else {
+                    self.stopped = true;
+                    bus.timer.freeze(true);
+                }
+            }
 
-            // 0xC3 JP a16
+            // 0x76 HALT - sleeps, unless interrupts are off and one is waiting, then it trips.
+            0x76 => {
+                let waiting = bus.interrupt_flag & bus.interrupt_enable & 0x1F != 0;
+                if !self.ime && waiting {
+                    self.halt_bug = true;
+                } else {
+                    self.halted = true;
+                }
+            }
+
+            // 0xC3 JP nn - jump to the address after the opcode.
             0xC3 => {
                 let addr = self.fetch16(bus);
                 self.idle(bus);
@@ -103,7 +121,7 @@ impl Cpu {
             // 0xE9 JP HL - the address is already in HL, so nothing is read.
             0xE9 => self.regs.pc = self.regs.hl(),
 
-            // 0xF3 DI
+            // 0xF3 DI - switch interrupts off at once.
             0xF3 => {
                 self.ime = false;
                 self.ime_pending = false;
@@ -198,7 +216,7 @@ impl Cpu {
                 self.regs.write16(register, value.wrapping_sub(1));
             }
 
-            // ADD HL,rr
+            // ADD HL,rr - H and C come from bits 11 and 15, and Z is left alone.
             0x09 | 0x19 | 0x29 | 0x39 => {
                 let value = self.regs.read16(pair(opcode >> 4, false));
                 self.idle(bus);
@@ -299,7 +317,7 @@ impl Cpu {
                 self.execute_cb(cb_opcode, bus);
             }
 
-            // TODO(PR-07..10): the other 240 opcodes.
+            // Only the 11 empty slots land here. The real chip locks up on them.
             _ => todo!(
                 "opcode {opcode:#04X} at pc {:#06X}",
                 self.regs.pc.wrapping_sub(1)
@@ -344,7 +362,7 @@ impl Cpu {
         }
     }
 
-    // Move A to or from one address. Bit 4 of the opcode picks the direction.
+    // Move A to or from one address. Callers pick the direction from bit 4 of the opcode.
     fn move_a(&mut self, bus: &mut Bus, address: u16, into_a: bool) {
         if into_a {
             self.regs.a = self.read8(bus, address);
@@ -636,7 +654,7 @@ mod tests {
         }
     }
 
-    // The flag register has no low nibble, so popping must not invent one.
+    // The flag register has no bottom four bits, so popping must not invent them.
     #[test]
     fn popping_af_keeps_the_flag_bits_clean() {
         let (mut cpu, mut bus) = loaded_cpu();
@@ -706,7 +724,7 @@ mod tests {
     #[test]
     fn the_stack_offset_carries_come_from_the_low_byte() {
         let cases = [
-            (0xC00Fu16, 0x01u8, true, false),  // low nibble overflows
+            (0xC00Fu16, 0x01u8, true, false),  // low four bits overflow
             (0xC0FFu16, 0x01u8, true, true),   // low byte overflows too
             (0xC000u16, 0x01u8, false, false), // neither
         ];
