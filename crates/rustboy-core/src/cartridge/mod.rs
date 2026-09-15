@@ -76,7 +76,7 @@ impl Cartridge {
 
     pub fn read_rom(&self, addr: u16) -> u8 {
         self.rom
-            .get(self.mbc.rom_offset(addr))
+            .get(self.mbc.rom_offset(addr, self.rom.len()))
             .copied()
             .unwrap_or(0xFF)
     }
@@ -93,14 +93,14 @@ impl Cartridge {
     }
 
     pub fn read_ram(&self, addr: u16) -> u8 {
-        match self.mbc.ram_offset(addr) {
+        match self.mbc.ram_offset(addr, self.ram.len()) {
             Some(offset) => self.ram.get(offset).copied().unwrap_or(0xFF),
             None => 0xFF,
         }
     }
 
     pub fn write_ram(&mut self, addr: u16, value: u8) {
-        if let Some(offset) = self.mbc.ram_offset(addr)
+        if let Some(offset) = self.mbc.ram_offset(addr, self.ram.len())
             && offset < self.ram.len()
         {
             self.ram[offset] = value;
@@ -119,32 +119,5 @@ impl Cartridge {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_a_rom_shorter_than_its_header() {
-        assert_eq!(
-            Cartridge::new(vec![0; 16]).unwrap_err(),
-            CartridgeError::TooSmall(16)
-        );
-    }
-
-    #[test]
-    fn rejects_an_unknown_mapper() {
-        let mut rom = vec![0; 0x8000];
-        rom[0x0147] = 0xFE;
-        assert_eq!(
-            Cartridge::new(rom).unwrap_err(),
-            CartridgeError::UnsupportedMapper(0xFE)
-        );
-    }
-
-    #[test]
-    fn reads_the_title() {
-        let mut rom = vec![0; 0x8000];
-        rom[0x0134..0x0139].copy_from_slice(b"ZELDA");
-        let cart = Cartridge::new(rom).unwrap();
-        assert_eq!(cart.header.title, "ZELDA");
-    }
-}
+#[path = "../../tests/unit/cartridge.rs"]
+mod tests;
