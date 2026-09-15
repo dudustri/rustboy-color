@@ -57,6 +57,24 @@ impl Cpu {
                 }
             }
 
+            // 0x18 JR e8 - jump a short way forwards or back.
+            0x18 => self.jump_relative(bus, true),
+
+            // JR cc,e8 - the same, only if the flag test passes.
+            0x20 | 0x28 | 0x30 | 0x38 => {
+                let take = self.condition(opcode);
+                self.jump_relative(bus, take);
+            }
+
+            // 0xCD CALL nn - save where to come back to, then jump.
+            0xCD => self.call(bus, true),
+
+            // CALL cc,nn - the same, only if the flag test passes.
+            0xC4 | 0xCC | 0xD4 | 0xDC => {
+                let take = self.condition(opcode);
+                self.call(bus, take);
+            }
+
             // 0xE9 JP HL - the address is already in HL, so nothing is read.
             0xE9 => self.regs.pc = self.regs.hl(),
 
@@ -253,6 +271,26 @@ impl Cpu {
                 "opcode {opcode:#04X} at pc {:#06X}",
                 self.regs.pc.wrapping_sub(1)
             ),
+        }
+    }
+
+    // Read a signed byte and, if asked, move PC by it, counting from the next instruction.
+    fn jump_relative(&mut self, bus: &mut Bus, take: bool) {
+        let offset = self.fetch8(bus) as i8;
+        if take {
+            self.idle(bus);
+            self.regs.pc = self.regs.pc.wrapping_add(offset as u16);
+        }
+    }
+
+    // Read an address and, if asked, push the way back and jump there.
+    fn call(&mut self, bus: &mut Bus, take: bool) {
+        let address = self.fetch16(bus);
+        if take {
+            self.idle(bus);
+            let back = self.regs.pc; // already past the address, so this is the next instruction
+            self.push16(bus, back);
+            self.regs.pc = address;
         }
     }
 
@@ -806,6 +844,96 @@ mod tests {
                 } else {
                     assert_eq!(cycles, 12, "{opcode:#04X} skipped");
                     assert_eq!(cpu.regs.pc, 0xD003, "{opcode:#04X} skipped");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn jr_counts_from_the_next_instruction() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        bus.write(0xD001, 0x05);
+        assert_eq!(run(&mut cpu, &mut bus, 0x18), 12);
+        assert_eq!(cpu.regs.pc, 0xD007); // 0xD002 plus 5
+    }
+
+    // Minus two lands back on the JR itself, the usual way to wait forever.
+    #[test]
+    fn jr_can_jump_backwards() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        bus.write(0xD001, 0xFE);
+        run(&mut cpu, &mut bus, 0x18);
+        assert_eq!(cpu.regs.pc, 0xD000);
+    }
+
+    #[test]
+    fn conditional_jr_follows_its_flag() {
+        for (opcode, flag_is_z, wants_on) in [
+            (0x20u8, true, false), // NZ
+            (0x28, true, true),    // Z
+            (0x30, false, false),  // NC
+            (0x38, false, true),   // C
+        ] {
+            for passes in [true, false] {
+                let (mut cpu, mut bus) = loaded_cpu();
+                let on = if passes { wants_on } else { !wants_on };
+                cpu.regs.f.z = flag_is_z && on;
+                cpu.regs.f.c = !flag_is_z && on;
+                bus.write(0xD001, 0x10);
+
+                let cycles = run(&mut cpu, &mut bus, opcode);
+                if passes {
+                    assert_eq!(cycles, 12, "{opcode:#04X} taken");
+                    assert_eq!(cpu.regs.pc, 0xD012, "{opcode:#04X} taken");
+                } else {
+                    assert_eq!(cycles, 8, "{opcode:#04X} skipped");
+                    assert_eq!(cpu.regs.pc, 0xD002, "{opcode:#04X} skipped");
+                }
+            }
+        }
+    }
+
+    // The return address is the instruction after the CALL, saved low byte on top.
+    #[test]
+    fn call_saves_the_way_back_and_jumps() {
+        let (mut cpu, mut bus) = loaded_cpu();
+        cpu.regs.sp = 0xDFF0;
+        bus.write(0xD001, 0x34);
+        bus.write(0xD002, 0x12);
+
+        assert_eq!(run(&mut cpu, &mut bus, 0xCD), 24);
+        assert_eq!(cpu.regs.pc, 0x1234);
+        assert_eq!(cpu.regs.sp, 0xDFEE);
+        assert_eq!(bus.read(0xDFEE), 0x03);
+        assert_eq!(bus.read(0xDFEF), 0xD0);
+    }
+
+    #[test]
+    fn conditional_call_follows_its_flag() {
+        for (opcode, flag_is_z, wants_on) in [
+            (0xC4u8, true, false), // NZ
+            (0xCC, true, true),    // Z
+            (0xD4, false, false),  // NC
+            (0xDC, false, true),   // C
+        ] {
+            for passes in [true, false] {
+                let (mut cpu, mut bus) = loaded_cpu();
+                cpu.regs.sp = 0xDFF0;
+                let on = if passes { wants_on } else { !wants_on };
+                cpu.regs.f.z = flag_is_z && on;
+                cpu.regs.f.c = !flag_is_z && on;
+                bus.write(0xD001, 0x34);
+                bus.write(0xD002, 0x12);
+
+                let cycles = run(&mut cpu, &mut bus, opcode);
+                if passes {
+                    assert_eq!(cycles, 24, "{opcode:#04X} taken");
+                    assert_eq!(cpu.regs.pc, 0x1234, "{opcode:#04X} taken");
+                    assert_eq!(cpu.regs.sp, 0xDFEE, "{opcode:#04X} taken");
+                } else {
+                    assert_eq!(cycles, 12, "{opcode:#04X} skipped");
+                    assert_eq!(cpu.regs.pc, 0xD003, "{opcode:#04X} skipped");
+                    assert_eq!(cpu.regs.sp, 0xDFF0, "{opcode:#04X} must not push");
                 }
             }
         }
