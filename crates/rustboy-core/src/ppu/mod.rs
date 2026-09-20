@@ -63,6 +63,7 @@ pub struct Ppu {
     obj_fifo: PixelFifo, // sprite pixels waiting to be mixed in
     #[allow(dead_code, reason = "TODO(PR-16): read by the sprite fetcher")]
     scan: SpriteScan, // the sprites picked for this line
+    stat_line: bool,     // the shared interrupt line; only its rise asks for an interrupt
 }
 
 impl Ppu {
@@ -94,6 +95,7 @@ impl Ppu {
             bg_fifo: PixelFifo::new(),
             obj_fifo: PixelFifo::new(),
             scan: SpriteScan::new(),
+            stat_line: false,
         }
     }
 
@@ -134,28 +136,19 @@ impl Ppu {
                 if self.dot >= OAM_SCAN_DOTS + DRAWING_DOTS {
                     self.render_line();
                     self.mode = Mode::HBlank;
-                    if self.stat & 0x08 != 0 {
-                        irq |= IF_STAT;
-                    }
                 }
             }
             Mode::HBlank => {
                 if self.dot >= DOTS_PER_LINE {
                     self.dot = 0;
                     self.ly += 1;
-                    irq |= self.check_lyc();
+                    self.compare_ly();
                     if self.ly as usize >= SCREEN_HEIGHT {
                         self.mode = Mode::VBlank;
                         self.frame_ready = true;
                         irq |= IF_VBLANK;
-                        if self.stat & 0x10 != 0 {
-                            irq |= IF_STAT;
-                        }
                     } else {
                         self.mode = Mode::OamScan;
-                        if self.stat & 0x20 != 0 {
-                            irq |= IF_STAT;
-                        }
                     }
                 }
             }
@@ -166,27 +159,40 @@ impl Ppu {
                     if self.ly >= LINES_PER_FRAME {
                         self.ly = 0;
                         self.mode = Mode::OamScan;
-                        if self.stat & 0x20 != 0 {
-                            irq |= IF_STAT;
-                        }
                     }
-                    irq |= self.check_lyc();
+                    self.compare_ly();
                 }
             }
         }
-        irq
+        irq | self.poll_stat()
     }
 
-    fn check_lyc(&mut self) -> u8 {
+    // Keep the LY equals LYC flag up to date. It is one of the interrupt sources.
+    fn compare_ly(&mut self) {
         if self.ly == self.lyc {
             self.stat |= 0x04;
-            if self.stat & 0x40 != 0 {
-                return IF_STAT;
-            }
         } else {
             self.stat &= !0x04;
         }
-        0
+    }
+
+    // Every switched-on source is ORed together into one line.
+    fn stat_sources(&self) -> bool {
+        let mode_source = match self.mode {
+            Mode::HBlank => self.stat & 0x08,
+            Mode::VBlank => self.stat & 0x10,
+            Mode::OamScan => self.stat & 0x20,
+            Mode::Drawing => 0,
+        };
+        mode_source != 0 || (self.stat & 0x44 == 0x44)
+    }
+
+    // Only a rise asks for an interrupt, so two sources at once still give one.
+    fn poll_stat(&mut self) -> u8 {
+        let now = self.stat_sources();
+        let rose = now && !self.stat_line;
+        self.stat_line = now;
+        if rose { IF_STAT } else { 0 }
     }
 
     // TODO(PR-14..17): draw real pixels here instead of a blank line.
@@ -270,7 +276,9 @@ impl Ppu {
         }
     }
 
-    pub fn write_register(&mut self, addr: u16, value: u8) {
+    /// Returns any interrupt the write itself asked for.
+    pub fn write_register(&mut self, addr: u16, value: u8) -> u8 {
+        let mut irq = 0;
         match addr {
             0xFF40 => {
                 self.lcdc = value;
@@ -278,14 +286,22 @@ impl Ppu {
                     self.ly = 0;
                     self.dot = 0;
                     self.mode = Mode::HBlank;
+                    self.stat_line = false; // a screen that is off asks for nothing
                 }
             }
             // The bottom 3 bits report status, so a game cannot write them.
-            0xFF41 => self.stat = (self.stat & 0x07) | (value & 0x78),
+            0xFF41 => {
+                self.stat = (self.stat & 0x07) | (value & 0x78);
+                irq |= self.poll_stat(); // switching a source on can raise the line
+            }
             0xFF42 => self.scy = value,
             0xFF43 => self.scx = value,
             0xFF44 => {} // the current line is read-only
-            0xFF45 => self.lyc = value,
+            0xFF45 => {
+                self.lyc = value;
+                self.compare_ly();
+                irq |= self.poll_stat();
+            }
             0xFF47 => self.bgp = value,
             0xFF48 => self.obp0 = value,
             0xFF49 => self.obp1 = value,
@@ -314,6 +330,7 @@ impl Ppu {
             }
             _ => {}
         }
+        irq
     }
 }
 

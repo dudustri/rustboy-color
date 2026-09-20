@@ -172,11 +172,11 @@ impl Bus {
             0xFF0F => self.interrupt_flag = value & 0x1F,
             0xFF10..=0xFF3F => self.apu.write(addr, value),
             0xFF46 => {} // TODO(PR-18): OAM DMA
-            0xFF40..=0xFF4B => self.ppu.write_register(addr, value),
+            0xFF40..=0xFF4B => self.interrupt_flag |= self.ppu.write_register(addr, value),
             0xFF4D => self.key1 = value & 0x01,
-            0xFF4F => self.ppu.write_register(addr, value),
+            0xFF4F => self.interrupt_flag |= self.ppu.write_register(addr, value),
             0xFF51..=0xFF55 => {} // TODO(PR-18): HDMA
-            0xFF68..=0xFF6B => self.ppu.write_register(addr, value),
+            0xFF68..=0xFF6B => self.interrupt_flag |= self.ppu.write_register(addr, value),
             0xFF70 => self.svbk = value & 0x07,
             _ => {}
         }
