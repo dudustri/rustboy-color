@@ -104,7 +104,25 @@ impl Ppu {
     }
 
     pub fn ly(&self) -> u8 {
-        self.ly
+        self.visible_ly()
+    }
+
+    // last line is odd: FF44 shows 153 for only 4 dots, then reads 0
+    fn visible_ly(&self) -> u8 {
+        if self.ly == LINES_PER_FRAME - 1 && self.dot >= 4 {
+            0
+        } else {
+            self.ly
+        }
+    }
+
+    // LYC keeps comparing against 153 for 8 dots, one step longer than FF44 shows it
+    fn compared_ly(&self) -> u8 {
+        if self.ly == LINES_PER_FRAME - 1 && self.dot >= 8 {
+            0
+        } else {
+            self.ly
+        }
     }
 
     pub fn tick(&mut self, t_cycles: u32) -> u8 {
@@ -153,6 +171,10 @@ impl Ppu {
                 }
             }
             Mode::VBlank => {
+                // partway through last line LYC starts comparing against 0 instead
+                if self.ly == LINES_PER_FRAME - 1 && self.dot == 8 {
+                    self.compare_ly();
+                }
                 if self.dot >= DOTS_PER_LINE {
                     self.dot = 0;
                     self.ly += 1;
@@ -169,7 +191,7 @@ impl Ppu {
 
     // keep LY equals LYC flag up to date. It is one of interrupt sources.
     fn compare_ly(&mut self) {
-        if self.ly == self.lyc {
+        if self.compared_ly() == self.lyc {
             self.stat |= 0x04;
         } else {
             self.stat &= !0x04;
@@ -258,7 +280,7 @@ impl Ppu {
             0xFF41 => self.stat | 0x80 | self.mode as u8,
             0xFF42 => self.scy,
             0xFF43 => self.scx,
-            0xFF44 => self.ly,
+            0xFF44 => self.visible_ly(),
             0xFF45 => self.lyc,
             0xFF47 => self.bgp,
             0xFF48 => self.obp0,
@@ -380,6 +402,89 @@ mod tests {
         });
         assert_eq!(ppu.mode(), mode);
         ppu
+    }
+
+    // both HBlank source and LY match are on, so only first rise counts
+    // straight from TCAGBD: on last line LY reads 153 for 4 dots, then 0
+    #[test]
+    fn ly_shows_153_for_only_four_dots() {
+        let mut ppu = Ppu::new();
+        ppu.tick(DOTS_PER_LINE * (LINES_PER_FRAME as u32 - 1)); // start of last line
+        assert_eq!(ppu.ly(), 153);
+
+        ppu.tick(4);
+        assert_eq!(ppu.ly(), 0, "reads 0 for rest of line");
+        assert_eq!(ppu.mode(), Mode::VBlank, "still on last line though");
+    }
+
+    // LYC lags by 4 dots, so 153 and 0 can both match on one line
+    #[test]
+    fn both_153_and_0_can_match_on_the_last_line() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF41, 0x40); // LY match source
+        ppu.write_register(0xFF45, 153);
+        let start = ppu.tick(DOTS_PER_LINE * (LINES_PER_FRAME as u32 - 1));
+        assert_eq!(start & IF_STAT, IF_STAT, "153 matches as line begins");
+
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF41, 0x40);
+        ppu.write_register(0xFF45, 0);
+        ppu.tick(DOTS_PER_LINE * (LINES_PER_FRAME as u32 - 1));
+        let after = ppu.tick(8);
+        assert_eq!(after & IF_STAT, IF_STAT, "0 matches 8 dots later");
+    }
+
+    #[test]
+    fn two_sources_at_once_still_give_one_interrupt() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF41, 0x48); // HBlank and LY match sources on
+        ppu.write_register(0xFF45, 0x00); // match on line 0, which we are on
+
+        let irq = ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS); // into blank at end of line 0
+        assert_eq!(irq & IF_STAT, 0, "line was already up from LY match");
+    }
+
+    #[test]
+    fn line_has_to_drop_before_it_can_rise_again() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF41, 0x08); // HBlank only
+        ppu.write_register(0xFF45, 0xFF); // never matches
+
+        let first = ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS);
+        assert_eq!(first & IF_STAT, IF_STAT, "first blank asks for one");
+
+        let same_blank = ppu.tick(DOTS_PER_LINE - OAM_SCAN_DOTS - DRAWING_DOTS);
+        assert_eq!(same_blank & IF_STAT, 0, "still inside same blank");
+
+        let next = ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS); // drawing drops it, next blank raises it
+        assert_eq!(next & IF_STAT, IF_STAT);
+    }
+
+    // switching a source on while its condition already holds is itself a rise
+    #[test]
+    fn switching_a_source_on_can_ask_for_an_interrupt() {
+        let mut ppu = Ppu::new();
+        ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS); // sit in blank at end of line
+        assert_eq!(ppu.write_register(0xFF41, 0x08), IF_STAT);
+        assert_eq!(ppu.write_register(0xFF41, 0x08), 0, "no second rise");
+    }
+
+    #[test]
+    fn a_new_lyc_that_matches_asks_for_an_interrupt() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF41, 0x40); // LY match source only
+        ppu.tick(DOTS_PER_LINE * 3); // now on line 3
+        assert_eq!(ppu.write_register(0xFF45, 3), IF_STAT);
+        assert_eq!(ppu.write_register(0xFF45, 9), 0, "no longer a match");
+    }
+
+    #[test]
+    fn a_screen_that_is_off_asks_for_nothing() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF41, 0x48);
+        ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS);
+        ppu.write_register(0xFF40, 0x00);
+        assert_eq!(ppu.tick(DOTS_PER_LINE * 4), 0);
     }
 
     #[test]
