@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Formatting and lints only need one machine.
+  # formatting and lints only need one machine.
   check:
     name: fmt and clippy
     runs-on: ubuntu-latest
@@ -19,7 +19,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # The core must behave the same on both architectures.
+  # core must behave same on both architectures.
   test:
     name: test on ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -34,16 +34,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true # the test ROMs
+          submodules: true # test ROMs
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.arch }}
       - run: cargo test --workspace --all-targets
         env:
-          RUSTBOY_REQUIRE_TEST_ROMS: 1 # fail rather than skip if the ROMs did not arrive
+          RUSTBOY_REQUIRE_TEST_ROMS: 1 # fail rather than skip if ROMs did not arrive
       - run: cargo build --workspace
 
-  # The browser host is only ever built as a library.
+  # browser host is only ever built as a library.
   wasm:
     name: wasm32
     runs-on: ubuntu-latest

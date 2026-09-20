@@ -1,6 +1,6 @@
-//! Builds the browser host, then serves it.
+//! builds browser host, then serves it.
 //!
-//! `cargo run -p rustboy-wasm` then open the address it prints. Pass --no-build to skip the build.
+//! `cargo run -p rustboy-wasm` then open address it prints. Pass --no-build to skip build.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -12,7 +12,7 @@ use std::thread;
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_ROOT: &str = "web";
 
-/// The repository, found from where this crate sits rather than the shell's directory.
+/// repository, found from where this crate sits rather than shell's directory.
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -21,7 +21,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Turn the browser host into `web/pkg`. Returns false if the build did not happen.
+/// turn browser host into `web/pkg`. Returns false if build did not happen.
 fn build_wasm() -> bool {
     println!("building the browser host...");
     let status = Command::new("wasm-pack")
@@ -90,7 +90,7 @@ fn main() {
     }
 }
 
-// Read one request and answer it. Anything malformed is simply dropped.
+// read one request and answer it. Anything malformed is simply dropped.
 fn serve(mut stream: TcpStream, root: &Path) {
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(clone) => clone,
@@ -102,7 +102,7 @@ fn serve(mut stream: TcpStream, root: &Path) {
         return;
     }
 
-    // Headers are not needed, but they must be drained before replying.
+    // headers are not needed, but they must be drained before replying.
     let mut line = String::new();
     while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
         line.clear();
@@ -117,12 +117,12 @@ fn serve(mut stream: TcpStream, root: &Path) {
     }
 }
 
-/// Turn a request target into a file inside `root`, or `None` if it escapes.
+/// turn a request target into a file inside `root`, or `None` if it escapes.
 fn resolve(target: &str, root: &Path) -> Option<PathBuf> {
     let path = target.split(['?', '#']).next().unwrap_or("/");
     let mut full = root.to_path_buf();
 
-    // Rebuild the path a segment at a time so `..` can never climb out.
+    // rebuild path a segment at a time so `..` can never climb out.
     for part in path.split('/').filter(|p| !p.is_empty()) {
         let decoded = percent_decode(part);
         let component = Path::new(&decoded).components().next()?;
@@ -140,7 +140,7 @@ fn resolve(target: &str, root: &Path) -> Option<PathBuf> {
         .filter(|f| f.is_file())
 }
 
-/// Turn `%20` and friends back into the bytes they stand for.
+/// turn `%20` and friends back into bytes they stand for.
 fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -159,7 +159,7 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// Browsers refuse to stream wasm unless the type is exactly right.
+// browsers refuse to stream wasm unless type is exactly right.
 fn content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("html") => "text/html; charset=utf-8",

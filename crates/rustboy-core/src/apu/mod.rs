@@ -1,16 +1,16 @@
-//! The sound chip. It only remembers register values for now; real sound arrives in M5.
+//! sound chip. It only remembers register values for now; real sound arrives in M5.
 
 use crate::{AUDIO_SAMPLE_RATE, T_CYCLES_PER_SECOND};
 
 const REGISTER_BASE: u16 = 0xFF10;
 const REGISTER_COUNT: usize = 0x30;
 
-/// About a second of sound, so a host that stops collecting cannot make this grow forever.
+/// about a second of sound, so a host that stops collecting cannot make this grow forever.
 const MAX_QUEUED_SAMPLES: usize = (AUDIO_SAMPLE_RATE as usize) * 2;
 
 pub struct Apu {
     registers: [u8; REGISTER_COUNT], // FF10-FF3F every sound control
-    samples: Vec<f32>,               // finished sound waiting for the host to collect
+    samples: Vec<f32>,               // finished sound waiting for host to collect
     sample_accumulator: u32,         // counts in whole numbers so sample timing never drifts
 }
 
@@ -29,7 +29,7 @@ impl Apu {
             if self.sample_accumulator >= T_CYCLES_PER_SECOND {
                 self.sample_accumulator -= T_CYCLES_PER_SECOND;
                 if self.samples.len() < MAX_QUEUED_SAMPLES {
-                    // TODO(PR-22..24): mix the four sound channels instead of silence.
+                    // TODO(PR-22..24): mix four sound channels instead of silence.
                     self.samples.push(0.0);
                     self.samples.push(0.0);
                 }
@@ -37,7 +37,7 @@ impl Apu {
         }
     }
 
-    /// Hands the waiting samples to the host, ordered left, right, left, right.
+    /// hands waiting samples to host, ordered left, right, left, right.
     pub fn drain(&mut self, out: &mut Vec<f32>) {
         out.append(&mut self.samples);
     }
@@ -67,7 +67,7 @@ mod tests {
         apu.tick(T_CYCLES_PER_SECOND);
         let mut out = Vec::new();
         apu.drain(&mut out);
-        // Two numbers per sample, one per ear.
+        // two numbers per sample, one per ear.
         assert_eq!(out.len(), AUDIO_SAMPLE_RATE as usize * 2);
     }
 }

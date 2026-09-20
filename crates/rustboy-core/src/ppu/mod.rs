@@ -1,4 +1,4 @@
-//! The screen: only its timing so far, real pixels in M3. See `docs/architecture.md` section 5.
+//! screen: only its timing so far, real pixels in M3. See `docs/architecture.md` section 5.
 
 mod fetcher;
 mod fifo;
@@ -17,10 +17,10 @@ const DOTS_PER_LINE: u32 = 456;
 const LINES_PER_FRAME: u8 = 154;
 const OAM_SCAN_DOTS: u32 = 80;
 
-/// TODO(PR-14): drawing really takes 172 to 289 dots; pinned to the shortest until the FIFO exists.
+/// TODO(PR-14): drawing really takes 172 to 289 dots; pinned to shortest until FIFO exists.
 const DRAWING_DOTS: u32 = 172;
 
-/// The pale green-white a real screen shows when nothing has been drawn.
+/// pale green-white a real screen shows when nothing has been drawn.
 const BLANK: [u8; 4] = [0xE0, 0xF8, 0xD0, 0xFF];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,38 +32,38 @@ pub enum Mode {
 }
 
 pub struct Ppu {
-    pub framebuffer: Vec<u8>, // the finished picture, 4 bytes per pixel: red, green, blue, alpha
-    pub frame_ready: bool,    // true when a picture is done: the host's cue to draw it
+    pub framebuffer: Vec<u8>, // finished picture, 4 bytes per pixel: red, green, blue, alpha
+    pub frame_ready: bool,    // true when a picture is done: host's cue to draw it
     vram: Vec<u8>,            // 2 banks of tile pictures and maps, seen at 8000-9FFF
-    oam: [u8; OAM_SIZE],      // the 40 sprite entries, seen at FE00-FE9F
-    mode: Mode,               // which of the 4 stages of a line we are in
-    dot: u32,                 // ticks into the current line, 0 to 455
+    oam: [u8; OAM_SIZE],      // 40 sprite entries, seen at FE00-FE9F
+    mode: Mode,               // which of 4 stages of a line we are in
+    dot: u32,                 // ticks into current line, 0 to 455
 
-    // registers: the knobs a game turns, each with its own address
+    // registers: knobs a game turns, each with its own address
     lcdc: u8,       // FF40 main switch: screen on, window on, sprite size
-    stat: u8,       // FF41 what the screen is doing, and which events interrupt
+    stat: u8,       // FF41 what screen is doing, and which events interrupt
     scy: u8,        // FF42 background scrolled up by this much
     scx: u8,        // FF43 background scrolled left by this much
-    ly: u8,         // FF44 the line being drawn right now, 0 to 153
+    ly: u8,         // FF44 line being drawn right now, 0 to 153
     lyc: u8,        // FF45 interrupt when ly reaches this line
-    bgp: u8,        // FF47 the 4 grey shades for the background, old Game Boy only
+    bgp: u8,        // FF47 4 grey shades for background, old Game Boy only
     obp0: u8,       // FF48 grey shades for sprites using palette 0
     obp1: u8,       // FF49 grey shades for sprites using palette 1
-    wy: u8,         // FF4A top edge of the window
-    wx: u8,         // FF4B left edge of the window, plus 7
-    vbk: u8,        // FF4F which of the 2 video RAM banks is on show
+    wy: u8,         // FF4A top edge of window
+    wx: u8,         // FF4B left edge of window, plus 7
+    vbk: u8,        // FF4F which of 2 video RAM banks is on show
     bcps: u8,       // FF68 which background colour slot FF69 will touch
-    bcpd: [u8; 64], // FF69 the 8 background palettes, 4 colours each
+    bcpd: [u8; 64], // FF69 8 background palettes, 4 colours each
     ocps: u8,       // FF6A which sprite colour slot FF6B will touch
-    ocpd: [u8; 64], // FF6B the 8 sprite palettes, 4 colours each
+    ocpd: [u8; 64], // FF6B 8 sprite palettes, 4 colours each
 
-    // the pixel pipeline, all still empty
+    // pixel pipeline, all still empty
     fetcher: Fetcher,    // builds background pixels 8 at a time
     bg_fifo: PixelFifo,  // background pixels waiting their turn
     obj_fifo: PixelFifo, // sprite pixels waiting to be mixed in
     #[allow(dead_code, reason = "TODO(PR-16): read by the sprite fetcher")]
-    scan: SpriteScan, // the sprites picked for this line
-    stat_line: bool,     // the shared interrupt line; only its rise asks for an interrupt
+    scan: SpriteScan, // sprites picked for this line
+    stat_line: bool,     // shared interrupt line; only its rise asks for an interrupt
 }
 
 impl Ppu {
@@ -167,7 +167,7 @@ impl Ppu {
         irq | self.poll_stat()
     }
 
-    // Keep the LY equals LYC flag up to date. It is one of the interrupt sources.
+    // keep LY equals LYC flag up to date. It is one of interrupt sources.
     fn compare_ly(&mut self) {
         if self.ly == self.lyc {
             self.stat |= 0x04;
@@ -176,7 +176,7 @@ impl Ppu {
         }
     }
 
-    // Every switched-on source is ORed together into one line.
+    // every switched-on source is ORed together into one line.
     fn stat_sources(&self) -> bool {
         let mode_source = match self.mode {
             Mode::HBlank => self.stat & 0x08,
@@ -187,7 +187,7 @@ impl Ppu {
         mode_source != 0 || (self.stat & 0x44 == 0x44)
     }
 
-    // Only a rise asks for an interrupt, so two sources at once still give one.
+    // only a rise asks for an interrupt, so two sources at once still give one.
     fn poll_stat(&mut self) -> u8 {
         let now = self.stat_sources();
         let rose = now && !self.stat_line;
@@ -211,17 +211,17 @@ impl Ppu {
         (self.vbk as usize & 1) * VRAM_BANK_SIZE + (addr as usize - 0x8000)
     }
 
-    // While drawing, the screen is reading video RAM and the palettes, so the CPU is shut out.
+    // while drawing, screen is reading video RAM and palettes, so CPU is shut out.
     fn drawing(&self) -> bool {
         self.mode == Mode::Drawing
     }
 
-    // The sprite table is in use from the sprite search until the line is drawn.
+    // sprite table is in use from sprite search until line is drawn.
     fn oam_busy(&self) -> bool {
         matches!(self.mode, Mode::OamScan | Mode::Drawing)
     }
 
-    /// Reads 0xFF while the screen is drawing.
+    /// reads 0xFF while screen is drawing.
     pub fn read_vram(&self, addr: u16) -> u8 {
         if self.drawing() {
             return 0xFF;
@@ -229,7 +229,7 @@ impl Ppu {
         self.vram[self.vram_index(addr)]
     }
 
-    /// Ignored while the screen is drawing.
+    /// ignored while screen is drawing.
     pub fn write_vram(&mut self, addr: u16, value: u8) {
         if !self.drawing() {
             let index = self.vram_index(addr);
@@ -237,7 +237,7 @@ impl Ppu {
         }
     }
 
-    /// Reads 0xFF during the sprite search and while drawing.
+    /// reads 0xFF during sprite search and while drawing.
     pub fn read_oam(&self, addr: u16) -> u8 {
         if self.oam_busy() {
             return 0xFF;
@@ -245,7 +245,7 @@ impl Ppu {
         self.oam[(addr - 0xFE00) as usize]
     }
 
-    /// Ignored during the sprite search and while drawing.
+    /// ignored during sprite search and while drawing.
     pub fn write_oam(&mut self, addr: u16, value: u8) {
         if !self.oam_busy() {
             self.oam[(addr - 0xFE00) as usize] = value;
@@ -276,7 +276,7 @@ impl Ppu {
         }
     }
 
-    /// Returns any interrupt the write itself asked for.
+    /// returns any interrupt write itself asked for.
     pub fn write_register(&mut self, addr: u16, value: u8) -> u8 {
         let mut irq = 0;
         match addr {
@@ -289,14 +289,14 @@ impl Ppu {
                     self.stat_line = false; // a screen that is off asks for nothing
                 }
             }
-            // The bottom 3 bits report status, so a game cannot write them.
+            // bottom 3 bits report status, so a game cannot write them.
             0xFF41 => {
                 self.stat = (self.stat & 0x07) | (value & 0x78);
-                irq |= self.poll_stat(); // switching a source on can raise the line
+                irq |= self.poll_stat(); // switching a source on can raise line
             }
             0xFF42 => self.scy = value,
             0xFF43 => self.scx = value,
-            0xFF44 => {} // the current line is read-only
+            0xFF44 => {} // current line is read-only
             0xFF45 => {
                 self.lyc = value;
                 self.compare_ly();
@@ -309,7 +309,7 @@ impl Ppu {
             0xFF4B => self.wx = value,
             0xFF4F => self.vbk = value & 0x01,
             0xFF68 => self.bcps = value,
-            // While drawing the write is lost, but the index still moves on.
+            // while drawing write is lost, but index still moves on.
             0xFF69 => {
                 if !self.drawing() {
                     self.bcpd[(self.bcps & 0x3F) as usize] = value;
@@ -319,7 +319,7 @@ impl Ppu {
                 }
             }
             0xFF6A => self.ocps = value,
-            // While drawing the write is lost, but the index still moves on.
+            // while drawing write is lost, but index still moves on.
             0xFF6B => {
                 if !self.drawing() {
                     self.ocpd[(self.ocps & 0x3F) as usize] = value;
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(ppu.ly(), 0);
     }
 
-    // A new screen moved forward to the start of one mode, on the first line.
+    // a new screen moved forward to start of one mode, on first line.
     fn in_mode(mode: Mode) -> Ppu {
         let mut ppu = Ppu::new();
         ppu.tick(match mode {
@@ -400,13 +400,13 @@ mod tests {
         }
     }
 
-    // Reading 0xFF alone cannot prove the write was lost, so look again once it is open.
+    // reading 0xFF alone cannot prove write was lost, so look again once it is open.
     #[test]
     fn a_write_while_drawing_is_lost() {
         let mut ppu = in_mode(Mode::Drawing);
         ppu.write_vram(0x8000, 0x42);
         ppu.write_oam(0xFE00, 0x42);
-        ppu.tick(DRAWING_DOTS); // on to the blank at the end of the line
+        ppu.tick(DRAWING_DOTS); // on to blank at end of line
         assert_eq!(ppu.read_vram(0x8000), 0x00);
         assert_eq!(ppu.read_oam(0xFE00), 0x00);
     }

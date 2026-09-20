@@ -1,12 +1,12 @@
-//! The CPU's registers: the handful of values it can work on directly.
+//! CPU's registers: handful of values it can work on directly.
 
-/// The flag register `F`: `Z N H C` live in the top 4 bits, the bottom 4 are always zero.
+/// flag register `F`: `Z N H C` live in top 4 bits, bottom 4 are always zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Flags {
-    pub z: bool, // the last sum came out zero
-    pub n: bool, // the last sum was a subtraction; only DAA looks at it
-    pub h: bool, // the low 4 bits overflowed; only DAA looks at it
-    pub c: bool, // a sum overflowed or borrowed, or a shift pushed a bit off the end
+    pub z: bool, // last sum came out zero
+    pub n: bool, // last sum was a subtraction; only DAA looks at it
+    pub h: bool, // low 4 bits overflowed; only DAA looks at it
+    pub c: bool, // a sum overflowed or borrowed, or a shift pushed a bit off end
 }
 
 impl Flags {
@@ -17,7 +17,7 @@ impl Flags {
             | ((self.c as u8) << 4)
     }
 
-    /// Throws away the bottom 4 bits, exactly like the real chip.
+    /// throws away bottom 4 bits, exactly like real chip.
     pub const fn from_bits(value: u8) -> Self {
         Self {
             z: value & 0x80 != 0,
@@ -28,7 +28,7 @@ impl Flags {
     }
 }
 
-/// An 8-bit register. Opcodes always list them in the order `B C D E H L (HL) A`.
+/// an 8-bit register. Opcodes always list them in order `B C D E H L (HL) A`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reg8 {
     A,
@@ -52,19 +52,19 @@ pub enum Reg16 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Registers {
     pub a: u8,    // accumulator: almost every sum ends up here
-    pub f: Flags, // how the last sum turned out
+    pub f: Flags, // how last sum turned out
     pub b: u8,    // spare byte, pairs with c
     pub c: u8,    // spare byte, pairs with b
     pub d: u8,    // spare byte, pairs with e
     pub e: u8,    // spare byte, pairs with d
     pub h: u8,    // spare byte, pairs with l to point at memory
     pub l: u8,    // spare byte, pairs with h to point at memory
-    pub sp: u16,  // stack pointer: top of the scratch pile
-    pub pc: u16,  // program counter: which byte the CPU runs next
+    pub sp: u16,  // stack pointer: top of scratch pile
+    pub pc: u16,  // program counter: which byte CPU runs next
 }
 
 impl Registers {
-    /// Where the boot ROM leaves the CPU, so we can skip it. Games read `a = 0x11` to spot a Color.
+    /// where boot ROM leaves CPU, so we can skip it. Games read `a = 0x11` to spot a Color.
     pub fn post_boot_cgb() -> Self {
         Self {
             a: 0x11,
@@ -76,7 +76,7 @@ impl Registers {
             h: 0x00,
             l: 0x0D,
             sp: 0xFFFE,
-            pc: 0x0100, // where the cartridge starts running
+            pc: 0x0100, // where cartridge starts running
         }
     }
 

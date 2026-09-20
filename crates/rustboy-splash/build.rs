@@ -1,34 +1,34 @@
-//! Builds the two title-screen layers from the photo, into OUT_DIR, never into the repository.
+//! builds two title-screen layers from photo, into OUT_DIR, never into repository.
 
 use std::path::{Path, PathBuf};
 
 use image::imageops::FilterType;
 
-// These have to match `rustboy_core` and `lib.rs`; a test in `lib.rs` checks them.
+// these have to match `rustboy_core` and `lib.rs`; a test in `lib.rs` checks them.
 const SCREEN_WIDTH: usize = 160;
 const SCREEN_HEIGHT: usize = 144;
 const LETTER: u8 = 1;
 const SHADOW: u8 = 2;
 const BYLINE: u8 = 3;
 
-const CROP_TOP: u32 = 430; // where the 10:9 window starts in the tall photo
+const CROP_TOP: u32 = 430; // where 10:9 window starts in tall photo
 const COLOURS: usize = 24; // fewer colours means blockier
-const SATURATION: f32 = 1.45; // the photo is foggy
+const SATURATION: f32 = 1.45; // photo is foggy
 const CONTRAST: f32 = 1.25;
 const WORDS: &str = "RUST BOY COLOR";
 const TEXT_SCALE: usize = 1;
-const CREDIT: &str = "by dudustri"; // the smaller line, shown once the picture has gone
+const CREDIT: &str = "by dudustri"; // smaller line, shown once picture has gone
 
 const GLYPH_WIDTH: usize = 5;
 const GLYPH_HEIGHT: usize = 7;
 const GLYPH_GAP: usize = 1;
 
-// The byline uses a smaller alphabet so it sits below the title without competing.
+// byline uses a smaller alphabet so it sits below title without competing.
 const SMALL_WIDTH: usize = 3;
 const SMALL_HEIGHT: usize = 5;
 const GAP_BELOW_TITLE: usize = 11;
 
-// A 5 by 7 letter for every character the title needs.
+// A 5 by 7 letter for every character title needs.
 fn glyph(c: char) -> [&'static str; GLYPH_HEIGHT] {
     match c {
         'R' => [
@@ -62,7 +62,7 @@ fn glyph(c: char) -> [&'static str; GLYPH_HEIGHT] {
     }
 }
 
-// A 3 by 5 box per byline character. Lower case, so most letters only fill the middle rows.
+// A 3 by 5 box per byline character. Lower case, so most letters only fill middle rows.
 fn small_glyph(c: char) -> [&'static str; SMALL_HEIGHT] {
     match c {
         'b' => ["100", "110", "101", "110", "000"],
@@ -85,7 +85,7 @@ fn small_width(words: &str) -> usize {
     words.chars().count() * (SMALL_WIDTH + GLYPH_GAP) - GLYPH_GAP
 }
 
-// Same idea as `stamp`, with the smaller alphabet and no shadow.
+// same idea as `stamp`, with smaller alphabet and no shadow.
 fn stamp_small(mask: &mut [u8], words: &str, x0: usize, y0: usize, value: u8) {
     let mut x = x0;
     for c in words.chars() {
@@ -103,7 +103,7 @@ fn stamp_small(mask: &mut [u8], words: &str, x0: usize, y0: usize, value: u8) {
     }
 }
 
-// Paint the words into the mask, one glyph pixel at a time.
+// paint words into mask, one glyph pixel at a time.
 fn stamp(mask: &mut [u8], words: &str, x0: usize, y0: usize, scale: usize, value: u8) {
     let mut x = x0;
     for c in words.chars() {
@@ -127,7 +127,7 @@ fn stamp(mask: &mut [u8], words: &str, x0: usize, y0: usize, scale: usize, value
     }
 }
 
-// Pull each channel away from grey, then away from the picture's average.
+// pull each channel away from grey, then away from picture's average.
 fn punch_up(pixels: &mut [u8]) {
     let mut total = 0.0;
     for chunk in pixels.chunks_exact(3) {
@@ -159,7 +159,7 @@ fn main() {
         }
     };
 
-    // Crop a 10:9 window out of the tall photo, then shrink it to screen size.
+    // crop a 10:9 window out of tall photo, then shrink it to screen size.
     let width = photo.width();
     let height = width * SCREEN_HEIGHT as u32 / SCREEN_WIDTH as u32;
     let cropped = photo.crop_imm(0, CROP_TOP, width, height);
@@ -172,7 +172,7 @@ fn main() {
     let mut rgb = small.to_rgb8().into_raw();
     punch_up(&mut rgb);
 
-    // Reduce to a handful of colours, which is what gives the blocky look.
+    // reduce to a handful of colours, which is what gives blocky look.
     let quantizer = color_quant::NeuQuant::new(10, COLOURS, &to_rgba(&rgb));
     let mut picture = Vec::with_capacity(SCREEN_WIDTH * SCREEN_HEIGHT * 4);
     for chunk in rgb.chunks_exact(3) {
@@ -182,7 +182,7 @@ fn main() {
         picture.push(0xFF);
     }
 
-    // The words live in their own layer so the picture can fade out from under them.
+    // words live in their own layer so picture can fade out from under them.
     let mut mask = vec![0u8; SCREEN_WIDTH * SCREEN_HEIGHT];
     let text_width = text_width(WORDS, TEXT_SCALE);
     let x0 = (SCREEN_WIDTH - text_width) / 2;
@@ -197,7 +197,7 @@ fn main() {
     );
     stamp(&mut mask, WORDS, x0, y0, TEXT_SCALE, LETTER);
 
-    // Centre the byline just below the title.
+    // centre byline just below title.
     let credit_width = small_width(CREDIT);
     let credit_x = (SCREEN_WIDTH - credit_width) / 2;
     let credit_y = y0 + GLYPH_HEIGHT * TEXT_SCALE + GAP_BELOW_TITLE;
@@ -207,7 +207,7 @@ fn main() {
     write(&out.join("splash_text.mask"), &mask);
 }
 
-// The quantizer wants four channels, the resize gave us three.
+// quantizer wants four channels, resize gave us three.
 fn to_rgba(rgb: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 3 * 4);
     for chunk in rgb.chunks_exact(3) {

@@ -7,7 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# Intentionally empty. The core must stay portable to wasm32 and to any
-# platform layer; anything that touches files, time or the screen belongs
+# intentionally empty. core must stay portable to wasm32 and to any
+# platform layer; anything that touches files, time or screen belongs
 # in a host crate.
 [dependencies]

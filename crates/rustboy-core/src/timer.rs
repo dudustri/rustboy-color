@@ -1,15 +1,15 @@
-//! DIV and TIMA, the two counters a game uses to measure time.
+//! DIV and TIMA, two counters a game uses to measure time.
 
 use crate::bus::IF_TIMER;
 
 pub struct Timer {
     div: u16,         // FF04 counts up forever; a game only sees its top byte
-    tima: u8,         // FF05 counts up at the speed tac picks
+    tima: u8,         // FF05 counts up at speed tac picks
     tma: u8,          // FF06 what tima restarts from after it overflows
     tac: u8,          // FF07 timer on or off, and how fast
     reload_in: u8,    // ticks until an overflowed tima is refilled from tma
-    reloaded_for: u8, // ticks left in the cycle where tima was just refilled
-    frozen: bool,     // true during STOP, when the divider does not count
+    reloaded_for: u8, // ticks left in cycle where tima was just refilled
+    frozen: bool,     // true during STOP, when divider does not count
 }
 
 impl Timer {
@@ -25,14 +25,14 @@ impl Timer {
         }
     }
 
-    /// Set DIV back to 0. A write to FF04 does this, and so does STOP.
+    /// set DIV back to 0. A write to FF04 does this, and so does STOP.
     pub fn reset_div(&mut self) {
         let before = self.selected_bit();
         self.div = 0;
-        self.step_on_falling_edge(before); // dropping the selected bit to 0 counts as a tick
+        self.step_on_falling_edge(before); // dropping selected bit to 0 counts as a tick
     }
 
-    /// Stop or restart counting. The CPU freezes the timer for as long as it is in STOP.
+    /// stop or restart counting. CPU freezes timer for as long as it is in STOP.
     pub fn freeze(&mut self, frozen: bool) {
         self.frozen = frozen;
     }
@@ -51,7 +51,7 @@ impl Timer {
         irq
     }
 
-    // An overflow refills TIMA one M-cycle late, and only then asks for the interrupt.
+    // an overflow refills TIMA one M-cycle late, and only then asks for interrupt.
     fn finish_reload(&mut self) -> u8 {
         self.reloaded_for = self.reloaded_for.saturating_sub(1);
         if self.reload_in == 0 {
@@ -66,7 +66,7 @@ impl Timer {
         IF_TIMER
     }
 
-    // The bit of DIV that TAC picks. TIMA steps each time it falls from 1 to 0.
+    // bit of DIV that TAC picks. TIMA steps each time it falls from 1 to 0.
     fn selected_bit(&self) -> bool {
         let bit = match self.tac & 0x03 {
             0 => 9,
@@ -77,7 +77,7 @@ impl Timer {
         (self.div >> bit) & 1 == 1
     }
 
-    // Step TIMA when the picked bit drops to 0. On the Color, switching the timer off never counts.
+    // step TIMA when picked bit drops to 0. On Color, switching timer off never counts.
     fn step_on_falling_edge(&mut self, before: bool) {
         if before && !self.selected_bit() && self.tac & 0x04 != 0 {
             let (next, overflow) = self.tima.overflowing_add(1);
@@ -101,7 +101,7 @@ impl Timer {
     pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
             0xFF04 => self.reset_div(),
-            // In the 00 cycle a write cancels the reload; right after a reload it is ignored.
+            // in 00 cycle a write cancels reload; right after a reload it is ignored.
             0xFF05 => {
                 if self.reload_in > 0 {
                     self.reload_in = 0;
@@ -110,14 +110,14 @@ impl Timer {
                     self.tima = value;
                 }
             }
-            // Right after a reload, a new TMA goes straight into TIMA too.
+            // right after a reload, a new TMA goes straight into TIMA too.
             0xFF06 => {
                 self.tma = value;
                 if self.reloaded_for > 0 {
                     self.tima = value;
                 }
             }
-            // Picking a different bit can also look like a fall from 1 to 0.
+            // picking a different bit can also look like a fall from 1 to 0.
             0xFF07 => {
                 let before = self.selected_bit();
                 self.tac = value & 0x07;
@@ -138,7 +138,7 @@ impl Default for Timer {
 mod tests {
     use super::*;
 
-    // Running every 16 ticks, DIV at 0, TMA at 80, and TIMA one step from overflowing.
+    // running every 16 ticks, DIV at 0, TMA at 80, and TIMA one step from overflowing.
     fn about_to_overflow() -> Timer {
         let mut timer = Timer::new();
         timer.write(0xFF04, 0);
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(timer.read(0xFF05), 0x11);
     }
 
-    // An older Game Boy would tick here. The Color does not.
+    // an older Game Boy would tick here. Color does not.
     #[test]
     fn switching_the_timer_off_does_not_tick_on_the_color() {
         let mut timer = about_to_overflow();

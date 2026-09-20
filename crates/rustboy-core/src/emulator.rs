@@ -1,4 +1,4 @@
-//! The whole console. A host never needs anything but this type.
+//! whole console. A host never needs anything but this type.
 
 use crate::T_CYCLES_PER_FRAME;
 use crate::bus::Bus;
@@ -7,12 +7,12 @@ use crate::cpu::Cpu;
 use crate::joypad::Button;
 
 pub struct Emulator {
-    pub cpu: Cpu, // the processor
+    pub cpu: Cpu, // processor
     pub bus: Bus, // everything else, reached by address
 }
 
 impl Emulator {
-    /// A console with no game in it. The screen keeps running, so the host shows a blank LCD.
+    /// a console with no game in it. screen keeps running, so host shows a blank LCD.
     pub fn new() -> Self {
         Self {
             cpu: Cpu::new(),
@@ -37,10 +37,10 @@ impl Emulator {
         self.bus.cartridge.is_some()
     }
 
-    /// Runs until the screen finishes a picture, which stays right even at double speed.
+    /// runs until screen finishes a picture, which stays right even at double speed.
     pub fn run_frame(&mut self) {
         self.bus.ppu.frame_ready = false;
-        // A switched-off screen never finishes a picture, so put a ceiling on the loop.
+        // a switched-off screen never finishes a picture, so put a ceiling on loop.
         let deadline = self.bus.cycles() + (T_CYCLES_PER_FRAME as u64) * 2;
         while !self.bus.ppu.frame_ready && self.bus.cycles() < deadline {
             if self.is_loaded() {
@@ -63,7 +63,7 @@ impl Emulator {
         self.bus.apu.drain(out);
     }
 
-    /// The game's save data for the host to store. `None` when no cartridge is in.
+    /// Game's save data for host to store. `None` when no cartridge is in.
     pub fn save_ram(&self) -> Option<&[u8]> {
         self.bus.cartridge.as_ref().map(|c| c.ram())
     }
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn frames_take_about_the_right_number_of_cycles() {
         let mut emu = Emulator::new();
-        emu.run_frame(); // the first one starts partway through a line
+        emu.run_frame(); // first one starts partway through a line
         let start = emu.bus.cycles();
         emu.run_frame();
         let elapsed = emu.bus.cycles() - start;

@@ -10,7 +10,7 @@ description = "The title screen shown before a game loads, shared by every host.
 [dependencies]
 rustboy-core = { path = "../rustboy-core" }
 
-# Only the build script reads the photo; nothing ships in the final binary.
+# only build script reads photo; nothing ships in final binary.
 [build-dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 color_quant = "1.1"

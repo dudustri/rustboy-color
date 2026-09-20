@@ -1,8 +1,8 @@
-//! The link cable port. Nothing is plugged in, but test ROMs print their results through it.
+//! link cable port. Nothing is plugged in, but test ROMs print their results through it.
 
 pub struct Serial {
-    sb: u8,          // FF01 the byte being sent or received
-    sc: u8,          // FF02 starts a transfer and picks the clock
+    sb: u8,          // FF01 byte being sent or received
+    sc: u8,          // FF02 starts a transfer and picks clock
     output: Vec<u8>, // everything sent out; test ROMs print their result here
 }
 
@@ -16,7 +16,7 @@ impl Serial {
     }
 
     pub fn tick(&mut self, _t_cycles: u32) -> u8 {
-        0 // TODO(PR-12): time the transfer and raise the interrupt
+        0 // TODO(PR-12): time transfer and raise interrupt
     }
 
     pub fn output(&self) -> &[u8] {
