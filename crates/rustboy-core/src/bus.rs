@@ -1,4 +1,4 @@
-//! Sends every address to the right chip. The full map is in `docs/architecture.md` section 2.
+//! sends every address to right chip. full map is in `docs/architecture.md` section 2.
 
 use crate::apu::Apu;
 use crate::cartridge::Cartridge;
@@ -18,20 +18,20 @@ const WRAM_BANKS: usize = 8;
 const HRAM_SIZE: usize = 0x7F;
 
 pub struct Bus {
-    pub cartridge: Option<Cartridge>, // the game, or None when nothing is plugged in
-    pub ppu: Ppu,                     // the screen
-    pub apu: Apu,                     // the sound chip
-    pub timer: Timer,                 // the counters a game uses to measure time
-    pub joypad: Joypad,               // the buttons
-    pub serial: Serial,               // the link cable port
-    pub double_speed: bool,           // true while the CGB runs its CPU twice as fast
+    pub cartridge: Option<Cartridge>, // game, or None when nothing is plugged in
+    pub ppu: Ppu,                     // screen
+    pub apu: Apu,                     // sound chip
+    pub timer: Timer,                 // counters a game uses to measure time
+    pub joypad: Joypad,               // buttons
+    pub serial: Serial,               // link cable port
+    pub double_speed: bool,           // true while CGB runs its CPU twice as fast
     wram: Vec<u8>,                    // 8 banks of work RAM, seen at C000-DFFF
     hram: [u8; HRAM_SIZE],            // 127 bytes of high RAM at FF80-FFFE
     t_cycles: u64,                    // ticks since power on
 
-    // registers the CPU chip keeps for itself: interrupts, RAM banking, speed
+    // registers CPU chip keeps for itself: interrupts, RAM banking, speed
     pub interrupt_flag: u8, // FF0F which interrupts are waiting to be handled
-    pub interrupt_enable: u8, // FFFF which interrupts the game allows
+    pub interrupt_enable: u8, // FFFF which interrupts game allows
     svbk: u8,               // FF70 which work RAM bank sits at D000-DFFF
     key1: u8,               // FF4D ask for double speed, and report whether it is on
 }
@@ -56,21 +56,21 @@ impl Bus {
         }
     }
 
-    /// A fake machine you can write anywhere in, so opcode tests can place code freely.
+    /// a fake machine you can write anywhere in, so opcode tests can place code freely.
     pub fn testing() -> Self {
         Self::new(Some(Cartridge::test_ram()))
     }
 
-    /// Ticks counted since the console was switched on.
+    /// ticks counted since console was switched on.
     pub fn cycles(&self) -> u64 {
         self.t_cycles
     }
 
-    /// Moves every chip forward. The CPU calls this once per M-cycle.
+    /// moves every chip forward. CPU calls this once per M-cycle.
     pub fn tick(&mut self, t_cycles: u32) {
         self.t_cycles += t_cycles as u64;
 
-        // In double speed only the CPU runs faster; screen and sound keep the normal rate.
+        // in double speed only CPU runs faster; screen and sound keep normal rate.
         let base = if self.double_speed {
             t_cycles / 2
         } else {
@@ -84,12 +84,12 @@ impl Bus {
         self.interrupt_flag |= self.joypad.take_interrupt();
     }
 
-    /// Whether a game has asked, through KEY1, for the next STOP to change speed.
+    /// whether a game has asked, through KEY1, for next STOP to change speed.
     pub fn speed_switch_armed(&self) -> bool {
         self.key1 & 0x01 != 0
     }
 
-    /// Flip between normal and double speed, and clear the request.
+    /// flip between normal and double speed, and clear request.
     pub fn switch_speed(&mut self) {
         self.double_speed = !self.double_speed;
         self.key1 = 0;
@@ -172,11 +172,11 @@ impl Bus {
             0xFF0F => self.interrupt_flag = value & 0x1F,
             0xFF10..=0xFF3F => self.apu.write(addr, value),
             0xFF46 => {} // TODO(PR-18): OAM DMA
-            0xFF40..=0xFF4B => self.ppu.write_register(addr, value),
+            0xFF40..=0xFF4B => self.interrupt_flag |= self.ppu.write_register(addr, value),
             0xFF4D => self.key1 = value & 0x01,
-            0xFF4F => self.ppu.write_register(addr, value),
+            0xFF4F => self.interrupt_flag |= self.ppu.write_register(addr, value),
             0xFF51..=0xFF55 => {} // TODO(PR-18): HDMA
-            0xFF68..=0xFF6B => self.ppu.write_register(addr, value),
+            0xFF68..=0xFF6B => self.interrupt_flag |= self.ppu.write_register(addr, value),
             0xFF70 => self.svbk = value & 0x07,
             _ => {}
         }

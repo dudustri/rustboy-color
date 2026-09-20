@@ -1,4 +1,4 @@
-//! The buttons, read through the single register FF00.
+//! buttons, read through single register FF00.
 
 use crate::bus::IF_JOYPAD;
 
@@ -15,7 +15,7 @@ pub enum Button {
 }
 
 impl Button {
-    /// Which bit we keep this button in: 0-3 the d-pad, 4-7 the face buttons.
+    /// which bit we keep this button in: 0-3 d-pad, 4-7 face buttons.
     fn bit(self) -> u8 {
         match self {
             Button::Right => 0,
@@ -32,8 +32,8 @@ impl Button {
 
 pub struct Joypad {
     held: u8,      // one bit per button, 1 while held down; reading flips them all
-    select: u8,    // FF00 bits 4-5: which row of buttons the game is asking for
-    interrupt: u8, // a joypad interrupt waiting for the bus to collect it
+    select: u8,    // FF00 bits 4-5: which row of buttons game is asking for
+    interrupt: u8, // a joypad interrupt waiting for bus to collect it
 }
 
 impl Joypad {
@@ -45,7 +45,7 @@ impl Joypad {
         }
     }
 
-    /// Whether any button is held, which is what wakes the CPU from STOP.
+    /// whether any button is held, which is what wakes CPU from STOP.
     pub fn any_held(&self) -> bool {
         self.held != 0
     }
@@ -67,7 +67,7 @@ impl Joypad {
         core::mem::take(&mut self.interrupt)
     }
 
-    /// Hardware is upside down: a held button reads 0, so we start from all ones.
+    /// hardware is upside down: a held button reads 0, so we start from all ones.
     pub fn read(&self) -> u8 {
         let mut lines = 0x0F;
         if self.select & 0x10 == 0 {
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn pressed_button_reads_as_zero() {
         let mut joypad = Joypad::new();
-        joypad.write(0x20); // ask for the d-pad row
+        joypad.write(0x20); // ask for d-pad row
         joypad.set_button(Button::Right, true);
         assert_eq!(joypad.read() & 0x01, 0);
     }
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn unselected_row_is_not_reported() {
         let mut joypad = Joypad::new();
-        joypad.write(0x10); // ask for the face button row
+        joypad.write(0x10); // ask for face button row
         joypad.set_button(Button::Right, true);
         assert_eq!(joypad.read() & 0x01, 0x01);
     }

@@ -1,4 +1,4 @@
-//! One arm per opcode, each doing the same steps the real chip does, so timing falls out for free.
+//! one arm per opcode, each doing same steps real chip does, so timing falls out for free.
 //!
 //! Opcode reference: <https://gbdev.io/gb-opcodes/optables/>
 
@@ -6,7 +6,7 @@ use super::registers::{Reg8, Reg16};
 use super::{Cpu, alu};
 use crate::bus::Bus;
 
-// Opcodes number the pairs BC DE HL SP, but push and pop use AF in place of SP.
+// opcodes number pairs BC DE HL SP, but push and pop use AF in place of SP.
 fn pair(bits: u8, stack: bool) -> Reg16 {
     match bits & 0x03 {
         0 => Reg16::BC,
@@ -17,7 +17,7 @@ fn pair(bits: u8, stack: bool) -> Reg16 {
     }
 }
 
-// Opcodes number the registers B C D E H L (HL) A. The mask keeps this to 0 to 7.
+// opcodes number registers B C D E H L (HL) A. mask keeps this to 0 to 7.
 fn operand(bits: u8) -> Option<Reg8> {
     match bits & 0x07 {
         0 => Some(Reg8::B),
@@ -26,8 +26,8 @@ fn operand(bits: u8) -> Option<Reg8> {
         3 => Some(Reg8::E),
         4 => Some(Reg8::H),
         5 => Some(Reg8::L),
-        6 => None,          // the byte HL points at, not a register
-        _ => Some(Reg8::A), // 7, the only value left after & 0x07
+        6 => None,          // byte HL points at, not a register
+        _ => Some(Reg8::A), // 7, only value left after & 0x07
     }
 }
 
@@ -59,14 +59,14 @@ impl Cpu {
                 }
             }
 
-            // 0xC3 JP nn - jump to the address after the opcode.
+            // 0xC3 JP nn - jump to address after opcode.
             0xC3 => {
                 let addr = self.fetch16(bus);
                 self.idle(bus);
                 self.regs.pc = addr;
             }
 
-            // JP cc,nn - the address is always read; a jump that happens costs one more cycle.
+            // JP cc,nn - address is always read; a jump that happens costs one more cycle.
             0xC2 | 0xCA | 0xD2 | 0xDA => {
                 let address = self.fetch16(bus);
                 if self.condition(opcode) {
@@ -78,7 +78,7 @@ impl Cpu {
             // 0x18 JR e8 - jump a short way forwards or back.
             0x18 => self.jump_relative(bus, true),
 
-            // JR cc,e8 - the same, only if the flag test passes.
+            // JR cc,e8 - same, only if flag test passes.
             0x20 | 0x28 | 0x30 | 0x38 => {
                 let take = self.condition(opcode);
                 self.jump_relative(bus, take);
@@ -87,16 +87,16 @@ impl Cpu {
             // 0xCD CALL nn - save where to come back to, then jump.
             0xCD => self.call(bus, true),
 
-            // CALL cc,nn - the same, only if the flag test passes.
+            // CALL cc,nn - same, only if flag test passes.
             0xC4 | 0xCC | 0xD4 | 0xDC => {
                 let take = self.condition(opcode);
                 self.call(bus, take);
             }
 
-            // 0xC9 RET - take the saved address off the stack and go back.
+            // 0xC9 RET - take saved address off stack and go back.
             0xC9 => self.ret(bus),
 
-            // RET cc - checking the flag costs a cycle, whether it returns or not.
+            // RET cc - checking flag costs a cycle, whether it returns or not.
             0xC0 | 0xC8 | 0xD0 | 0xD8 => {
                 self.idle(bus);
                 if self.condition(opcode) {
@@ -110,7 +110,7 @@ impl Cpu {
                 self.ime = true;
             }
 
-            // RST - a one-byte CALL to one of eight fixed addresses, named by the opcode bits.
+            // RST - a one-byte CALL to one of eight fixed addresses, named by opcode bits.
             0xC7 | 0xCF | 0xD7 | 0xDF | 0xE7 | 0xEF | 0xF7 | 0xFF => {
                 self.idle(bus);
                 let back = self.regs.pc;
@@ -118,7 +118,7 @@ impl Cpu {
                 self.regs.pc = (opcode & 0x38) as u16;
             }
 
-            // 0xE9 JP HL - the address is already in HL, so nothing is read.
+            // 0xE9 JP HL - address is already in HL, so nothing is read.
             0xE9 => self.regs.pc = self.regs.hl(),
 
             // 0xF3 DI - switch interrupts off at once.
@@ -127,16 +127,16 @@ impl Cpu {
                 self.ime_pending = false;
             }
 
-            // 0xFB EI - switches interrupts on after the next instruction
+            // 0xFB EI - switches interrupts on after next instruction
             0xFB => self.ime_pending = true,
 
-            // LD rr,nn - the two bytes after the opcode go into a pair.
+            // LD rr,nn - two bytes after opcode go into a pair.
             0x01 | 0x11 | 0x21 | 0x31 => {
                 let value = self.fetch16(bus);
                 self.regs.write16(pair(opcode >> 4, false), value);
             }
 
-            // 0x08 LD (nn),SP - the stack pointer goes to memory, low byte first.
+            // 0x08 LD (nn),SP - stack pointer goes to memory, low byte first.
             0x08 => {
                 let address = self.fetch16(bus);
                 let sp = self.regs.sp;
@@ -144,13 +144,13 @@ impl Cpu {
                 self.write8(bus, address.wrapping_add(1), (sp >> 8) as u8);
             }
 
-            // 0xF9 LD SP,HL - the idle cycle is the 16-bit value moving across.
+            // 0xF9 LD SP,HL - idle cycle is 16-bit value moving across.
             0xF9 => {
                 self.idle(bus);
                 self.regs.sp = self.regs.hl();
             }
 
-            // PUSH rr - the idle cycle is SP being stepped down before the writes.
+            // PUSH rr - idle cycle is SP being stepped down before writes.
             0xC5 | 0xD5 | 0xE5 | 0xF5 => {
                 self.idle(bus);
                 let value = self.regs.read16(pair(opcode >> 4, true));
@@ -169,19 +169,19 @@ impl Cpu {
                 self.move_a(bus, address, opcode & 0x10 != 0);
             }
 
-            // 0xE0 / 0xF0 LDH (n),A and LDH A,(n) - one byte names a spot on the FF00 page.
+            // 0xE0 / 0xF0 LDH (n),A and LDH A,(n) - one byte names a spot on FF00 page.
             0xE0 | 0xF0 => {
                 let offset = self.fetch8(bus) as u16;
                 self.move_a(bus, 0xFF00 + offset, opcode & 0x10 != 0);
             }
 
-            // 0xE2 / 0xF2 LDH (C),A and LDH A,(C) - the same page, addressed by C.
+            // 0xE2 / 0xF2 LDH (C),A and LDH A,(C) - same page, addressed by C.
             0xE2 | 0xF2 => {
                 let address = 0xFF00 + self.regs.c as u16;
                 self.move_a(bus, address, opcode & 0x10 != 0);
             }
 
-            // 0xF8 LD HL,SP+e8 - the only load that touches the flags.
+            // 0xF8 LD HL,SP+e8 - only load that touches flags.
             0xF8 => {
                 let offset = self.fetch8(bus);
                 self.idle(bus);
@@ -190,7 +190,7 @@ impl Cpu {
                 self.regs.f = flags;
             }
 
-            // 0xE8 ADD SP,e8 - the same sum, kept in SP. One more idle cycle than 0xF8.
+            // 0xE8 ADD SP,e8 - same sum, kept in SP. One more idle cycle than 0xF8.
             0xE8 => {
                 let offset = self.fetch8(bus);
                 self.idle(bus);
@@ -200,7 +200,7 @@ impl Cpu {
                 self.regs.f = flags;
             }
 
-            // INC rr - no flags change at all, unlike the 8-bit version.
+            // INC rr - no flags change at all, unlike 8-bit version.
             0x03 | 0x13 | 0x23 | 0x33 => {
                 let register = pair(opcode >> 4, false);
                 let value = self.regs.read16(register);
@@ -225,7 +225,7 @@ impl Cpu {
                 self.regs.f = flags;
             }
 
-            // LD A,(rr) and LD (rr),A - A moves to or from the byte a pair points at.
+            // LD A,(rr) and LD (rr),A - A moves to or from byte a pair points at.
             0x02 | 0x12 | 0x22 | 0x32 | 0x0A | 0x1A | 0x2A | 0x3A => {
                 let address = self.pointer(opcode);
                 if opcode & 0x08 == 0 {
@@ -236,25 +236,25 @@ impl Cpu {
                 }
             }
 
-            // LD r,n - the byte after the opcode goes straight into a register.
+            // LD r,n - byte after opcode goes straight into a register.
             0x06 | 0x0E | 0x16 | 0x1E | 0x26 | 0x2E | 0x36 | 0x3E => {
                 let value = self.fetch8(bus);
                 self.write_operand(bus, opcode >> 3, value);
             }
 
-            // 0x40-0x7F LD r,r' - both operands come from the opcode's own bits.
+            // 0x40-0x7F LD r,r' - both operands come from opcode's own bits.
             0x40..=0x7F => {
                 let value = self.read_operand(bus, opcode);
                 self.write_operand(bus, opcode >> 3, value);
             }
 
-            // 0x80-0xBF - eight sums on A, each against a register or the byte HL points at.
+            // 0x80-0xBF - eight sums on A, each against a register or byte HL points at.
             0x80..=0xBF => {
                 let value = self.read_operand(bus, opcode);
                 self.alu(opcode >> 3, value);
             }
 
-            // INC r - bits 3 to 5 name the register, as in the LD block.
+            // INC r - bits 3 to 5 name register, as in LD block.
             0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => {
                 let value = self.read_operand(bus, opcode >> 3);
                 let (result, flags) = alu::inc(value, self.regs.f.c);
@@ -270,7 +270,7 @@ impl Cpu {
                 self.write_operand(bus, opcode >> 3, result);
             }
 
-            // RLCA RRCA RLA RRA - the first four CB rotates, on A only, and Z always stays off.
+            // RLCA RRCA RLA RRA - first four CB rotates, on A only, and Z always stays off.
             0x07 | 0x0F | 0x17 | 0x1F => {
                 let (result, mut flags) = alu::shift(opcode >> 3, self.regs.a, self.regs.f.c);
                 flags.z = false;
@@ -278,7 +278,7 @@ impl Cpu {
                 self.regs.f = flags;
             }
 
-            // 0x27 DAA - turn the last sum back into two decimal digits.
+            // 0x27 DAA - turn last sum back into two decimal digits.
             0x27 => {
                 let (result, flags) = alu::daa(self.regs.a, self.regs.f);
                 self.regs.a = result;
@@ -292,21 +292,21 @@ impl Cpu {
                 self.regs.f.h = true;
             }
 
-            // 0x37 SCF - set the carry flag.
+            // 0x37 SCF - set carry flag.
             0x37 => {
                 self.regs.f.n = false;
                 self.regs.f.h = false;
                 self.regs.f.c = true;
             }
 
-            // 0x3F CCF - flip the carry flag.
+            // 0x3F CCF - flip carry flag.
             0x3F => {
                 self.regs.f.n = false;
                 self.regs.f.h = false;
                 self.regs.f.c = !self.regs.f.c;
             }
 
-            // ADD A,n through CP n - the same eight sums, against the byte after the opcode.
+            // ADD A,n through CP n - same eight sums, against byte after opcode.
             0xC6 | 0xCE | 0xD6 | 0xDE | 0xE6 | 0xEE | 0xF6 | 0xFE => {
                 let value = self.fetch8(bus);
                 self.alu(opcode >> 3, value);
@@ -317,7 +317,7 @@ impl Cpu {
                 self.execute_cb(cb_opcode, bus);
             }
 
-            // Only the 11 empty slots land here. The real chip locks up on them.
+            // only 11 empty slots land here. real chip locks up on them.
             _ => todo!(
                 "opcode {opcode:#04X} at pc {:#06X}",
                 self.regs.pc.wrapping_sub(1)
@@ -325,7 +325,7 @@ impl Cpu {
         }
     }
 
-    // Read a signed byte and, if asked, move PC by it, counting from the next instruction.
+    // read a signed byte and, if asked, move PC by it, counting from next instruction.
     fn jump_relative(&mut self, bus: &mut Bus, take: bool) {
         let offset = self.fetch8(bus) as i8;
         if take {
@@ -334,25 +334,25 @@ impl Cpu {
         }
     }
 
-    // Read an address and, if asked, push the way back and jump there.
+    // read an address and, if asked, push way back and jump there.
     fn call(&mut self, bus: &mut Bus, take: bool) {
         let address = self.fetch16(bus);
         if take {
             self.idle(bus);
-            let back = self.regs.pc; // already past the address, so this is the next instruction
+            let back = self.regs.pc; // already past address, so this is next instruction
             self.push16(bus, back);
             self.regs.pc = address;
         }
     }
 
-    // Take the saved address off the stack and jump back to it.
+    // take saved address off stack and jump back to it.
     fn ret(&mut self, bus: &mut Bus) {
         let address = self.pop16(bus);
         self.idle(bus);
         self.regs.pc = address;
     }
 
-    // Bits 3 and 4 of the opcode name the test: NZ Z NC C.
+    // bits 3 and 4 of opcode name test: NZ Z NC C.
     fn condition(&self, opcode: u8) -> bool {
         match (opcode >> 3) & 0x03 {
             0 => !self.regs.f.z,
@@ -362,7 +362,7 @@ impl Cpu {
         }
     }
 
-    // Move A to or from one address. Callers pick the direction from bit 4 of the opcode.
+    // move A to or from one address. Callers pick direction from bit 4 of opcode.
     fn move_a(&mut self, bus: &mut Bus, address: u16, into_a: bool) {
         if into_a {
             self.regs.a = self.read8(bus, address);
@@ -372,7 +372,7 @@ impl Cpu {
         }
     }
 
-    // The pair named by bits 4 and 5. HL steps after being used, never before.
+    // pair named by bits 4 and 5. HL steps after being used, never before.
     fn pointer(&mut self, opcode: u8) -> u16 {
         let hl = self.regs.hl();
         match (opcode >> 4) & 0x03 {
@@ -389,7 +389,7 @@ impl Cpu {
         }
     }
 
-    // Reading a register is free; reading through HL costs an M-cycle.
+    // reading a register is free; reading through HL costs an M-cycle.
     fn read_operand(&mut self, bus: &mut Bus, bits: u8) -> u8 {
         match operand(bits) {
             Some(register) => self.regs.read8(register),
@@ -400,7 +400,7 @@ impl Cpu {
         }
     }
 
-    // Writing a register is free; writing through HL costs an M-cycle.
+    // writing a register is free; writing through HL costs an M-cycle.
     fn write_operand(&mut self, bus: &mut Bus, bits: u8, value: u8) {
         match operand(bits) {
             Some(register) => self.regs.write8(register, value),
@@ -435,7 +435,7 @@ impl Cpu {
                 self.write_operand(bus, opcode, value | bit);
             }
 
-            // Rotates and shifts - bits 3 to 5 pick which of the eight.
+            // rotates and shifts - bits 3 to 5 pick which of eight.
             _ => {
                 let value = self.read_operand(bus, opcode);
                 let (result, flags) = alu::shift(opcode >> 3, value, self.regs.f.c);
@@ -451,7 +451,7 @@ mod tests {
     use super::*;
     use crate::cpu::registers::Flags;
 
-    // Put a known value in every register, and point HL at writable memory.
+    // put a known value in every register, and point HL at writable memory.
     fn loaded_cpu() -> (Cpu, Bus) {
         let mut cpu = Cpu::new();
         let bus = Bus::testing();
@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(bus.read(0xC000), 0x11);
     }
 
-    // Every one of the 63 forms must move the right byte and cost the right time.
+    // every one of 63 forms must move right byte and cost right time.
     #[test]
     fn the_whole_ld_block_works() {
         for opcode in 0x40..=0x7Fu8 {
@@ -520,7 +520,7 @@ mod tests {
         }
     }
 
-    // Only index six may mean memory; anything above must wrap, not fall through.
+    // only index six may mean memory; anything above must wrap, not fall through.
     #[test]
     fn only_six_means_memory() {
         for bits in 0..=0xFFu8 {
@@ -530,13 +530,13 @@ mod tests {
         assert_eq!(operand(0x0F), Some(Reg8::A));
     }
 
-    // Every immediate load must take its byte and cost the right time.
+    // every immediate load must take its byte and cost right time.
     #[test]
     fn immediate_loads_work() {
         for destination in 0..=7u8 {
             let opcode = 0x06 | (destination << 3);
             let (mut cpu, mut bus) = loaded_cpu();
-            bus.write(0xD001, 0x5A); // the byte the opcode will pick up
+            bus.write(0xD001, 0x5A); // byte opcode will pick up
 
             let cycles = run(&mut cpu, &mut bus, opcode);
             let through_memory = destination == 6;
@@ -551,7 +551,7 @@ mod tests {
         }
     }
 
-    // All eight forms move A through a pair, and cost one fetch plus one access.
+    // all eight forms move A through a pair, and cost one fetch plus one access.
     #[test]
     fn indirect_loads_work() {
         for opcode in [0x02, 0x12, 0x22, 0x32, 0x0A, 0x1A, 0x2A, 0x3A] {
@@ -586,7 +586,7 @@ mod tests {
         cpu.regs.set_hl(0xC030);
         bus.write(0xC030, 0xB3);
         run(&mut cpu, &mut bus, 0x2A); // LD A,(HL+)
-        assert_eq!(cpu.regs.a, 0xB3); // read the old address
+        assert_eq!(cpu.regs.a, 0xB3); // read old address
         assert_eq!(cpu.regs.hl(), 0xC031);
 
         let (mut cpu, mut bus) = loaded_cpu();
@@ -605,7 +605,7 @@ mod tests {
             (0x31, Reg16::SP),
         ] {
             let (mut cpu, mut bus) = loaded_cpu();
-            bus.write(0xD001, 0x34); // low byte first, as the chip stores them
+            bus.write(0xD001, 0x34); // low byte first, as chip stores them
             bus.write(0xD002, 0x12);
             assert_eq!(run(&mut cpu, &mut bus, opcode), 12, "{opcode:#04X}");
             assert_eq!(cpu.regs.read16(register), 0x1234, "{opcode:#04X}");
@@ -654,7 +654,7 @@ mod tests {
         }
     }
 
-    // The flag register has no bottom four bits, so popping must not invent them.
+    // flag register has no bottom four bits, so popping must not invent them.
     #[test]
     fn popping_af_keeps_the_flag_bits_clean() {
         let (mut cpu, mut bus) = loaded_cpu();
@@ -682,11 +682,11 @@ mod tests {
         assert_eq!(cpu.regs.a, 0x5E);
     }
 
-    // The FF00 page is where the hardware registers live.
+    // FF00 page is where hardware registers live.
     #[test]
     fn the_high_page_is_reachable_by_one_byte() {
         let (mut cpu, mut bus) = loaded_cpu();
-        bus.write(0xD001, 0x80); // FF80, the start of high RAM
+        bus.write(0xD001, 0x80); // FF80, start of high RAM
         assert_eq!(run(&mut cpu, &mut bus, 0xE0), 12); // LDH (80),A
         assert_eq!(bus.read(0xFF80), 0x77);
 
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(cpu.regs.hl(), 0xC0FF);
     }
 
-    // Both carries come from the low bytes, which is the easy part to get wrong.
+    // both carries come from low bytes, which is easy part to get wrong.
     #[test]
     fn the_stack_offset_carries_come_from_the_low_byte() {
         let cases = [
@@ -739,7 +739,7 @@ mod tests {
         }
     }
 
-    // Every one of the 64 sums must cost one M-cycle, plus one more through HL.
+    // every one of 64 sums must cost one M-cycle, plus one more through HL.
     #[test]
     fn the_whole_alu_block_has_the_right_timing() {
         for opcode in 0x80..=0xBFu8 {
@@ -762,7 +762,7 @@ mod tests {
         assert_eq!(cpu.regs.a, 0x70);
     }
 
-    // An immediate sum must give exactly what the register version gives.
+    // an immediate sum must give exactly what register version gives.
     #[test]
     fn immediate_sums_match_the_register_ones() {
         for kind in 0..=7u8 {
@@ -789,7 +789,7 @@ mod tests {
         }
     }
 
-    // Registers cost one M-cycle; through HL it reads and then writes, so three.
+    // registers cost one M-cycle; through HL it reads and then writes, so three.
     #[test]
     fn inc_and_dec_work_on_every_target() {
         for target in 0..=7u8 {
@@ -816,7 +816,7 @@ mod tests {
         }
     }
 
-    // Counting a pair up or down is invisible to the flags.
+    // counting a pair up or down is invisible to flags.
     #[test]
     fn wide_inc_and_dec_touch_no_flags() {
         for register in [Reg16::BC, Reg16::DE, Reg16::HL, Reg16::SP] {
@@ -891,7 +891,7 @@ mod tests {
         assert_eq!(cpu.regs.f.bits(), 0x90); // and back on
     }
 
-    // A score of 19 plus 1 must read 20 on screen, not 1A.
+    // a score of 19 plus 1 must read 20 on screen, not 1A.
     #[test]
     fn daa_after_add_gives_a_decimal_score() {
         let (mut cpu, mut bus) = loaded_cpu();
@@ -903,7 +903,7 @@ mod tests {
         assert_eq!(cpu.regs.a, 0x20);
     }
 
-    // Each test flag on and off: a jump that happens costs 16, one that does not costs 12.
+    // each test flag on and off: a jump that happens costs 16, one that does not costs 12.
     #[test]
     fn conditional_jumps_follow_their_flag() {
         for (opcode, z, c) in [
@@ -944,7 +944,7 @@ mod tests {
         assert_eq!(cpu.regs.pc, 0xD007); // 0xD002 plus 5
     }
 
-    // Minus two lands back on the JR itself, the usual way to wait forever.
+    // minus two lands back on JR itself, usual way to wait forever.
     #[test]
     fn jr_can_jump_backwards() {
         let (mut cpu, mut bus) = loaded_cpu();
@@ -980,7 +980,7 @@ mod tests {
         }
     }
 
-    // The return address is the instruction after the CALL, saved low byte on top.
+    // return address is instruction after CALL, saved low byte on top.
     #[test]
     fn call_saves_the_way_back_and_jumps() {
         let (mut cpu, mut bus) = loaded_cpu();
@@ -1026,14 +1026,14 @@ mod tests {
         }
     }
 
-    // A CALL followed by a RET must land on the instruction after the CALL.
+    // A CALL followed by a RET must land on instruction after CALL.
     #[test]
     fn ret_comes_back_to_after_the_call() {
         let (mut cpu, mut bus) = loaded_cpu();
         cpu.regs.sp = 0xDFF0;
         bus.write(0xD001, 0x34);
         bus.write(0xD002, 0x12);
-        bus.write(0x1234, 0xC9); // RET waiting at the destination
+        bus.write(0x1234, 0xC9); // RET waiting at destination
 
         run(&mut cpu, &mut bus, 0xCD); // CALL 1234
         let before = bus.cycles();
@@ -1110,7 +1110,7 @@ mod tests {
         }
     }
 
-    // Run CB followed by one opcode, and report how long it took.
+    // run CB followed by one opcode, and report how long it took.
     fn run_cb(cpu: &mut Cpu, bus: &mut Bus, opcode: u8) -> u64 {
         bus.write(0xD000, 0xCB);
         bus.write(0xD001, opcode);
@@ -1120,7 +1120,7 @@ mod tests {
         bus.cycles() - before
     }
 
-    // Put the same pattern in one target, leaving HL pointing at 0xC000.
+    // put same pattern in one target, leaving HL pointing at 0xC000.
     fn with_pattern(target: u8, pattern: u8) -> (Cpu, Bus) {
         let (mut cpu, mut bus) = loaded_cpu();
         match operand(target) {
@@ -1137,7 +1137,7 @@ mod tests {
         }
     }
 
-    // All 64 BIT opcodes: Z reports the bit, H is on, C is left alone.
+    // all 64 BIT opcodes: Z reports bit, H is on, C is left alone.
     #[test]
     fn bit_tests_every_bit_of_every_target() {
         for opcode in 0x40..=0x7Fu8 {
@@ -1158,7 +1158,7 @@ mod tests {
         }
     }
 
-    // All 128 RES and SET opcodes change exactly one bit and no flags.
+    // all 128 RES and SET opcodes change exactly one bit and no flags.
     #[test]
     fn res_and_set_change_one_bit_and_no_flags() {
         for opcode in 0x80..=0xFFu8 {
@@ -1183,7 +1183,7 @@ mod tests {
         }
     }
 
-    // All 64 must match the pure shift function, on every target, with the right timing.
+    // all 64 must match pure shift function, on every target, with right timing.
     #[test]
     fn every_shift_opcode_works_on_every_target() {
         for opcode in 0x00..=0x3Fu8 {
@@ -1206,7 +1206,7 @@ mod tests {
         }
     }
 
-    // The CB versions happen to use the very same numbers after the CB byte.
+    // CB versions happen to use very same numbers after CB byte.
     #[test]
     fn fast_rotates_match_the_cb_ones_except_for_z() {
         for opcode in [0x07u8, 0x0F, 0x17, 0x1F] {

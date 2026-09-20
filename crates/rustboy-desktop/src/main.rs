@@ -1,8 +1,8 @@
-//! The desktop host: a window, a keyboard, and nothing else.
+//! desktop host: a window, a keyboard, and nothing else.
 //!
-//! Keys: arrows, A and X for A and B, Enter, Shift, F11 fullscreen, Escape quits.
+//! keys: arrows, A and X for A and B, Enter, Shift, F11 fullscreen, Escape quits.
 //!
-//! Pass a game on the command line: `cargo run -p rustboy-desktop -- game.gbc`
+//! pass a game on command line: `cargo run -p rustboy-desktop -- game.gbc`
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,16 +20,16 @@ use winit::window::{Fullscreen, Window, WindowButtons, WindowId};
 
 const SCALE: u32 = 4; // every console pixel becomes a 4 by 4 block
 
-// One console frame: 70,224 ticks at 4,194,304 a second, so about 59.73 frames a second.
+// one console frame: 70,224 ticks at 4,194,304 a second, so about 59.73 frames a second.
 const FRAME_TIME: Duration =
     Duration::from_nanos((T_CYCLES_PER_FRAME as u64 * 1_000_000_000) / T_CYCLES_PER_SECOND as u64);
 
-// Everything the shared frontend needs from this platform.
+// everything shared frontend needs from this platform.
 struct Desktop {
     window: Arc<Window>,
     pixels: Pixels<'static>,
     started: Instant,
-    next_frame: Instant, // when the next frame is due
+    next_frame: Instant, // when next frame is due
 }
 
 impl Host for Desktop {
@@ -50,7 +50,7 @@ impl Host for Desktop {
 
 struct App {
     frontend: Frontend,
-    desktop: Option<Desktop>, // None until the event loop hands us a window
+    desktop: Option<Desktop>, // None until event loop hands us a window
 }
 
 impl App {
@@ -61,20 +61,20 @@ impl App {
         }
     }
 
-    // Fill the screen or go back to a window, keeping the monitor's current resolution.
+    // fill screen or go back to a window, keeping monitor's current resolution.
     fn toggle_fullscreen(&self) {
         let Some(desktop) = self.desktop.as_ref() else {
             return;
         };
         let next = match desktop.window.fullscreen() {
             Some(_) => None,
-            None => Some(Fullscreen::Borderless(None)), // None means the current monitor
+            None => Some(Fullscreen::Borderless(None)), // None means current monitor
         };
         desktop.window.set_fullscreen(next);
     }
 }
 
-// Which key works which button. Anything else is ignored.
+// which key works which button. Anything else is ignored.
 fn button_for(key: &Key) -> Option<Button> {
     match key {
         Key::Named(NamedKey::ArrowRight) => Some(Button::Right),
@@ -90,7 +90,7 @@ fn button_for(key: &Key) -> Option<Button> {
 }
 
 impl ApplicationHandler for App {
-    // Called once when the event loop is ready to give us a window.
+    // called once when event loop is ready to give us a window.
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let width = SCREEN_WIDTH as u32;
         let height = SCREEN_HEIGHT as u32;
@@ -98,7 +98,7 @@ impl ApplicationHandler for App {
             .with_title("rustboy-color")
             .with_inner_size(LogicalSize::new(width * SCALE, height * SCALE))
             .with_min_inner_size(LogicalSize::new(width, height))
-            // Ask for minimise and maximise; whether they are drawn is up to the desktop.
+            // ask for minimise and maximise; whether they are drawn is up to desktop.
             .with_enabled_buttons(WindowButtons::all());
 
         let window = match event_loop.create_window(attributes) {
@@ -110,7 +110,7 @@ impl ApplicationHandler for App {
             }
         };
 
-        // The window is bigger than the console; pixels stretches one onto the other.
+        // window is bigger than console; pixels stretches one onto other.
         let size = window.inner_size();
         let surface = SurfaceTexture::new(size.width, size.height, Arc::clone(&window));
         match Pixels::new(width, height, surface) {
@@ -140,7 +140,7 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::F11) if pressed => self.toggle_fullscreen(),
                     key => {
                         if pressed {
-                            self.frontend.skip_splash(); // any game key cuts the title short
+                            self.frontend.skip_splash(); // any game key cuts title short
                         }
                         if let Some(button) = button_for(key) {
                             self.frontend.set_button(button, pressed);
@@ -164,7 +164,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    // Draw only when a frame is actually due, then sleep until the next one.
+    // draw only when a frame is actually due, then sleep until next one.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(desktop) = self.desktop.as_mut() else {
             return;
@@ -173,7 +173,7 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         if now >= desktop.next_frame {
             desktop.next_frame += FRAME_TIME;
-            // After a stall, start again from now rather than racing to catch up.
+            // after a stall, start again from now rather than racing to catch up.
             if desktop.next_frame < now {
                 desktop.next_frame = now + FRAME_TIME;
             }
@@ -183,10 +183,10 @@ impl ApplicationHandler for App {
     }
 }
 
-// Read the game named on the command line, if there is one.
+// read game named on command line, if there is one.
 fn load_rom(frontend: &mut Frontend) -> Result<(), String> {
     let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) else {
-        return Ok(()); // no game is fine; the console shows a blank screen
+        return Ok(()); // no game is fine; console shows a blank screen
     };
 
     let rom =
@@ -215,7 +215,7 @@ fn main() {
         }
     };
 
-    // Only a starting value; about_to_wait sets a deadline for every frame.
+    // only a starting value; about_to_wait sets a deadline for every frame.
     event_loop.set_control_flow(ControlFlow::Poll);
 
     if let Err(error) = event_loop.run_app(&mut app) {

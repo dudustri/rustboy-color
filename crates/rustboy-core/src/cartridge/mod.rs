@@ -1,4 +1,4 @@
-//! The game cartridge: its ROM, its save RAM, and the chip that swaps banks between them.
+//! Game cartridge: its ROM, its save RAM, and chip that swaps banks between them.
 
 mod header;
 mod mbc;
@@ -10,7 +10,7 @@ use core::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CartridgeError {
-    /// The file is too short to even hold a cartridge header.
+    /// file is too short to even hold a cartridge header.
     TooSmall(usize),
     UnsupportedMapper(u8),
 }
@@ -27,14 +27,14 @@ impl fmt::Display for CartridgeError {
 impl std::error::Error for CartridgeError {}
 
 pub struct Cartridge {
-    pub header: Header, // what the game says about itself
-    rom: Vec<u8>,       // the whole game file
-    ram: Vec<u8>,       // save data, kept alive by a battery in the cart
-    mbc: Mbc,           // the chip that swaps banks in and out
+    pub header: Header, // what game says about itself
+    rom: Vec<u8>,       // whole game file
+    ram: Vec<u8>,       // save data, kept alive by a battery in cart
+    mbc: Mbc,           // chip that swaps banks in and out
 }
 
 impl fmt::Debug for Cartridge {
-    /// Written by hand on purpose: deriving it would dump the entire ROM into panic messages.
+    /// written by hand on purpose: deriving it would dump entire ROM into panic messages.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cartridge")
             .field("title", &self.header.title)
@@ -58,7 +58,7 @@ impl Cartridge {
         })
     }
 
-    /// A fake 32 KiB cartridge we can write to, so tests can place opcodes anywhere.
+    /// a fake 32 KiB cartridge we can write to, so tests can place opcodes anywhere.
     pub fn test_ram() -> Self {
         Self {
             header: Header {
@@ -107,7 +107,7 @@ impl Cartridge {
         }
     }
 
-    /// The save data, for the host to keep on disk.
+    /// save data, for host to keep on disk.
     pub fn ram(&self) -> &[u8] {
         &self.ram
     }
@@ -140,7 +140,7 @@ mod tests {
         );
     }
 
-    // An MBC1 cartridge where the first byte of every bank holds that bank's own number.
+    // an MBC1 cartridge where first byte of every bank holds that bank's own number.
     fn mbc1(banks: usize, ram_size_code: u8) -> Cartridge {
         let mut rom = vec![0; banks * 0x4000];
         for bank in 0..banks {
@@ -172,7 +172,7 @@ mod tests {
         let mut cart = mbc1(4, 0);
         cart.write_rom(0x2000, 0);
         assert_eq!(cart.read_rom(0x4000), 1);
-        cart.write_rom(0x2000, 0x20); // only the low 5 bits count, and they are 0
+        cart.write_rom(0x2000, 0x20); // only low 5 bits count, and they are 0
         assert_eq!(cart.read_rom(0x4000), 1);
     }
 

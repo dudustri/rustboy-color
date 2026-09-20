@@ -1,6 +1,6 @@
-//! The browser host: draws the console onto a canvas.
+//! browser host: draws console onto a canvas.
 //!
-//! Only says how to draw and how to tell the time; the frontend does the rest.
+//! only says how to draw and how to tell time; frontend does rest.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -14,16 +14,16 @@ use web_sys::{
     KeyboardEvent,
 };
 
-// The animation callback hands itself back to the browser, so it holds its own handle.
+// animation callback hands itself back to browser, so it holds its own handle.
 type FrameLoop = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
-// The frame loop and the key handlers all reach the same frontend.
+// frame loop and key handlers all reach same frontend.
 type Shared = Rc<RefCell<Frontend>>;
 
-/// Everything the shared frontend needs from a browser tab.
+/// everything shared frontend needs from a browser tab.
 struct Browser {
     context: CanvasRenderingContext2d,
-    pixels: Vec<u8>, // painted here, then handed to the canvas in one go
-    started: f64,    // milliseconds, from the browser's own clock
+    pixels: Vec<u8>, // painted here, then handed to canvas in one go
+    started: f64,    // milliseconds, from browser's own clock
 }
 
 impl Browser {
@@ -57,14 +57,14 @@ impl Host for Browser {
     }
 }
 
-/// Milliseconds since the page loaded.
+/// milliseconds since page loaded.
 fn now_ms() -> f64 {
     web_sys::window()
         .and_then(|w| w.performance())
         .map_or(0.0, |p| p.now())
 }
 
-/// Find the canvas the page set aside and get a 2D context for it.
+/// find canvas page set aside and get a 2D context for it.
 fn canvas_context(canvas_id: &str) -> Result<CanvasRenderingContext2d, JsValue> {
     let document = web_sys::window()
         .and_then(|w| w.document())
@@ -74,7 +74,7 @@ fn canvas_context(canvas_id: &str) -> Result<CanvasRenderingContext2d, JsValue> 
         .ok_or_else(|| JsValue::from_str("no canvas with that id"))?
         .dyn_into()?;
 
-    // The canvas is the console's real size; the page's CSS stretches it to fit.
+    // canvas is console's real size; page's CSS stretches it to fit.
     canvas.set_width(SCREEN_WIDTH as u32);
     canvas.set_height(SCREEN_HEIGHT as u32);
 
@@ -85,7 +85,7 @@ fn canvas_context(canvas_id: &str) -> Result<CanvasRenderingContext2d, JsValue> 
         .map_err(Into::into)
 }
 
-// Pass key presses and releases on to the frontend.
+// pass key presses and releases on to frontend.
 fn listen(name: &str, frontend: &Shared, pressed: bool) -> Result<(), JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let frontend = Rc::clone(frontend);
@@ -93,7 +93,7 @@ fn listen(name: &str, frontend: &Shared, pressed: bool) -> Result<(), JsValue> {
     let handler = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
         let key = event.key();
         if let Some(button) = button_for(&key) {
-            event.prevent_default(); // arrows would otherwise scroll the page
+            event.prevent_default(); // arrows would otherwise scroll page
             let mut frontend = frontend.borrow_mut();
             frontend.set_button(button, pressed);
             if pressed {
@@ -103,11 +103,11 @@ fn listen(name: &str, frontend: &Shared, pressed: bool) -> Result<(), JsValue> {
     });
 
     window.add_event_listener_with_callback(name, handler.as_ref().unchecked_ref())?;
-    handler.forget(); // the page owns it now, for as long as the tab is open
+    handler.forget(); // page owns it now, for as long as tab is open
     Ok(())
 }
 
-// Which key works which button. Anything else is ignored.
+// which key works which button. Anything else is ignored.
 fn button_for(key: &str) -> Option<Button> {
     match key {
         "ArrowRight" => Some(Button::Right),
@@ -122,12 +122,12 @@ fn button_for(key: &str) -> Option<Button> {
     }
 }
 
-// Complain in the browser's console, the only place a tab can say anything.
+// complain in browser's console, only place a tab can say anything.
 fn complain(message: &str) {
     web_sys::console::error_1(&JsValue::from_str(message));
 }
 
-// Hand the bytes the reader collected to the frontend.
+// hand bytes reader collected to frontend.
 fn take_rom(reader: &FileReader, frontend: &Shared) {
     let Ok(buffer) = reader.result() else {
         return complain("could not read that file");
@@ -139,7 +139,7 @@ fn take_rom(reader: &FileReader, frontend: &Shared) {
     }
 }
 
-// Watch a file picker and load whatever gets chosen.
+// watch a file picker and load whatever gets chosen.
 fn listen_for_rom(input_id: &str, frontend: &Shared) -> Result<(), JsValue> {
     let document = web_sys::window()
         .and_then(|w| w.document())
@@ -164,7 +164,7 @@ fn listen_for_rom(input_id: &str, frontend: &Shared) -> Result<(), JsValue> {
             return complain("this browser has no file reader");
         };
 
-        // Reading is asynchronous, so the rest happens in this second callback.
+        // reading is asynchronous, so rest happens in this second callback.
         let done = reader.clone();
         let frontend = Rc::clone(&frontend);
         let onload = Closure::<dyn FnMut()>::new(move || take_rom(&done, &frontend));
@@ -177,18 +177,18 @@ fn listen_for_rom(input_id: &str, frontend: &Shared) -> Result<(), JsValue> {
     });
 
     input.set_onchange(Some(handler.as_ref().unchecked_ref()));
-    handler.forget(); // the page owns it now, for as long as the tab is open
+    handler.forget(); // page owns it now, for as long as tab is open
     Ok(())
 }
 
-/// Ask the browser to call us back before the next repaint.
+/// ask browser to call us back before next repaint.
 fn request_frame(callback: &Closure<dyn FnMut()>) {
     if let Some(window) = web_sys::window() {
         let _ = window.request_animation_frame(callback.as_ref().unchecked_ref());
     }
 }
 
-/// Start the console on the given canvas, taking games from the given file picker.
+/// start console on given canvas, taking games from given file picker.
 #[wasm_bindgen]
 pub fn start(canvas_id: &str, rom_input_id: &str) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();

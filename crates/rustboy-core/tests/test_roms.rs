@@ -1,6 +1,6 @@
-//! Runs Blargg's test ROMs and checks each one prints "Passed" through the link port.
+//! runs Blargg's test ROMs and checks each one prints "Passed" through link port.
 //!
-//! The ROMs are not in the repository. Put them in `test-roms/` or set RUSTBOY_TEST_ROMS.
+//! ROMs are not in repository. Put them in `test-roms/` or set RUSTBOY_TEST_ROMS.
 
 use std::path::PathBuf;
 
@@ -8,14 +8,14 @@ use rustboy_core::Emulator;
 
 const FRAME_LIMIT: usize = 6_000; // about 100 seconds of console time, far more than any ROM needs
 
-// RUSTBOY_TEST_ROMS if set, otherwise test-roms/ at the top of the repository.
+// RUSTBOY_TEST_ROMS if set, otherwise test-roms/ at top of repository.
 fn rom_folder() -> PathBuf {
     std::env::var_os("RUSTBOY_TEST_ROMS")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-roms"))
 }
 
-// Run one ROM until it says Passed or Failed. None means the ROM is not there and was skipped.
+// run one ROM until it says Passed or Failed. None means ROM is not there and was skipped.
 fn run(name: &str) -> Option<String> {
     let path = rom_folder().join(name);
     let Ok(rom) = std::fs::read(&path) else {

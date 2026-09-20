@@ -1,4 +1,4 @@
-//! The block at 0100-014F where every cartridge describes itself.
+//! block at 0100-014F where every cartridge describes itself.
 
 use super::CartridgeError;
 
@@ -11,9 +11,9 @@ const HEADER_END: usize = 0x0150;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CgbFlag {
-    /// An original Game Boy game; a Color runs it in compatibility mode.
+    /// an original Game Boy game; a Color runs it in compatibility mode.
     None,
-    /// Uses Color features, but still works on an original Game Boy.
+    /// uses Color features, but still works on an original Game Boy.
     Enhanced,
     /// Color only; it refuses to run on an original Game Boy.
     Only,
@@ -34,7 +34,7 @@ impl Header {
             return Err(CartridgeError::TooSmall(rom.len()));
         }
 
-        // The Color flag sits on the title's last byte, so Color titles are one character shorter.
+        // Color flag sits on title's last byte, so Color titles are one character shorter.
         let cgb = match rom[CGB_FLAG] {
             0x80 => CgbFlag::Enhanced,
             0xC0 => CgbFlag::Only,

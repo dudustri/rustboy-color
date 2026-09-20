@@ -1,4 +1,4 @@
-//! The SM83 processor. Each memory access ticks the rest of the machine first, as hardware does.
+//! SM83 processor. Each memory access ticks rest of machine first, as hardware does.
 
 mod alu;
 pub mod exec;
@@ -8,12 +8,12 @@ use crate::bus::Bus;
 use registers::Registers;
 
 pub struct Cpu {
-    pub regs: Registers,   // the registers on the chip itself: a, f, b to l, sp, pc
-    pub ime: bool,         // master switch: while false the CPU ignores every interrupt
-    pub ime_pending: bool, // EI only takes effect after the next instruction
+    pub regs: Registers,   // registers on chip itself: a, f, b to l, sp, pc
+    pub ime: bool,         // master switch: while false CPU ignores every interrupt
+    pub ime_pending: bool, // EI only takes effect after next instruction
     pub halted: bool,      // asleep until an interrupt arrives
     pub stopped: bool,     // deep sleep after STOP, until a button is pressed
-    pub halt_bug: bool,    // the next fetch forgets to move PC on
+    pub halt_bug: bool,    // next fetch forgets to move PC on
 }
 
 impl Cpu {
@@ -36,7 +36,7 @@ impl Cpu {
             self.stopped = false;
             bus.timer.freeze(false);
         }
-        // The screen keeps going while asleep, so the host still gets frames.
+        // screen keeps going while asleep, so host still gets frames.
         if self.halted || self.stopped {
             bus.tick(4);
             return;
@@ -50,12 +50,12 @@ impl Cpu {
         }
     }
 
-    /// Answer a waiting interrupt: save PC, then jump to that interrupt's address. 5 M-cycles.
+    /// answer a waiting interrupt: save PC, then jump to that interrupt's address. 5 M-cycles.
     fn service_interrupt(&mut self, bus: &mut Bus) -> bool {
         if bus.interrupt_flag & bus.interrupt_enable & 0x1F == 0 {
             return false;
         }
-        // A waiting interrupt wakes the CPU up even when interrupts are switched off.
+        // a waiting interrupt wakes CPU up even when interrupts are switched off.
         self.halted = false;
         if !self.ime {
             return false;
@@ -68,7 +68,7 @@ impl Cpu {
         self.regs.sp = self.regs.sp.wrapping_sub(1);
         self.write8(bus, self.regs.sp, (pc >> 8) as u8);
 
-        // Only chosen now, because that write can land on IE and cancel the interrupt.
+        // only chosen now, because that write can land on IE and cancel interrupt.
         let pending = bus.interrupt_flag & bus.interrupt_enable & 0x1F;
 
         self.regs.sp = self.regs.sp.wrapping_sub(1);
@@ -76,7 +76,7 @@ impl Cpu {
         self.idle(bus);
 
         self.regs.pc = match pending {
-            0 => 0x0000, // cancelled halfway, so it lands at the very start of memory
+            0 => 0x0000, // cancelled halfway, so it lands at very start of memory
             _ => {
                 let index = pending.trailing_zeros();
                 bus.interrupt_flag &= !(1 << index);
@@ -96,7 +96,7 @@ impl Cpu {
         bus.write(addr, value);
     }
 
-    /// One M-cycle where the CPU thinks instead of touching memory.
+    /// one M-cycle where CPU thinks instead of touching memory.
     pub(crate) fn idle(&mut self, bus: &mut Bus) {
         bus.tick(4);
     }
@@ -104,7 +104,7 @@ impl Cpu {
     pub(crate) fn fetch8(&mut self, bus: &mut Bus) -> u8 {
         let addr = self.regs.pc;
         if self.halt_bug {
-            self.halt_bug = false; // PC stays put this once, so the same byte is read again
+            self.halt_bug = false; // PC stays put this once, so same byte is read again
         } else {
             self.regs.pc = addr.wrapping_add(1);
         }
@@ -208,7 +208,7 @@ mod tests {
         }
     }
 
-    // With several waiting, the lowest bit goes first and the rest keep waiting.
+    // with several waiting, lowest bit goes first and rest keep waiting.
     #[test]
     fn the_lowest_bit_wins() {
         let (mut cpu, mut bus) = ready();
@@ -225,7 +225,7 @@ mod tests {
         bus.interrupt_enable = IF_VBLANK;
         bus.interrupt_flag = IF_TIMER;
         cpu.step(&mut bus);
-        assert_eq!(cpu.regs.pc, 0xD001); // the NOP ran instead
+        assert_eq!(cpu.regs.pc, 0xD001); // NOP ran instead
         assert_eq!(bus.interrupt_flag, IF_TIMER);
     }
 
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(bus.interrupt_flag, IF_VBLANK, "it stays waiting");
     }
 
-    // The first push lands on IE and switches the timer off halfway, so the CPU ends up at 0000.
+    // first push lands on IE and switches timer off halfway, so CPU ends up at 0000.
     #[test]
     fn pushing_onto_ie_can_cancel_the_interrupt() {
         let (mut cpu, mut bus) = ready();
@@ -304,7 +304,7 @@ mod tests {
         );
     }
 
-    // Interrupts off with one already waiting: HALT does not sleep, and the next byte runs twice.
+    // interrupts off with one already waiting: HALT does not sleep, and next byte runs twice.
     #[test]
     fn the_halt_bug_runs_the_next_byte_twice() {
         let (mut cpu, mut bus) = halting();
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!((cpu.regs.a, cpu.regs.pc), (2, 0xD002));
     }
 
-    // STOP at D000, the unused byte after it, then INC A.
+    // STOP at D000, unused byte after it, then INC A.
     fn stopping() -> (Cpu, Bus) {
         let (mut cpu, mut bus) = ready();
         bus.write(0xD000, 0x10);
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn stop_changes_speed_when_a_game_asked_for_it() {
         let (mut cpu, mut bus) = stopping();
-        bus.write(0xFF4D, 0x01); // ask for the switch
+        bus.write(0xFF4D, 0x01); // ask for switch
         cpu.step(&mut bus);
 
         assert!(bus.double_speed);
