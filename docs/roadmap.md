@@ -73,6 +73,22 @@ recovered by reading the code.
 
 Anything documented in two places will disagree in two months.
 
+Every comment is one short line, in plain language.
+
+---
+
+### Tests
+
+The Rust layout, nothing invented:
+
+| Kind | Where | Sees private parts |
+|---|---|---|
+| unit | `#[cfg(test)] mod tests` at the bottom of the file it tests | yes |
+| integration and end to end | `tests/`, such as `test_roms.rs` | no, public parts only |
+
+Unit tests cost nothing in a build: `#[cfg(test)]` leaves them out unless
+`cargo test` is running.
+
 ---
 
 ### Cadence

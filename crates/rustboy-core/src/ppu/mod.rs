@@ -205,22 +205,45 @@ impl Ppu {
         (self.vbk as usize & 1) * VRAM_BANK_SIZE + (addr as usize - 0x8000)
     }
 
-    // TODO(PR-13): while the screen is busy the CPU cannot see VRAM or OAM and reads 0xFF instead.
+    // While drawing, the screen is reading video RAM and the palettes, so the CPU is shut out.
+    fn drawing(&self) -> bool {
+        self.mode == Mode::Drawing
+    }
+
+    // The sprite table is in use from the sprite search until the line is drawn.
+    fn oam_busy(&self) -> bool {
+        matches!(self.mode, Mode::OamScan | Mode::Drawing)
+    }
+
+    /// Reads 0xFF while the screen is drawing.
     pub fn read_vram(&self, addr: u16) -> u8 {
+        if self.drawing() {
+            return 0xFF;
+        }
         self.vram[self.vram_index(addr)]
     }
 
+    /// Ignored while the screen is drawing.
     pub fn write_vram(&mut self, addr: u16, value: u8) {
-        let index = self.vram_index(addr);
-        self.vram[index] = value;
+        if !self.drawing() {
+            let index = self.vram_index(addr);
+            self.vram[index] = value;
+        }
     }
 
+    /// Reads 0xFF during the sprite search and while drawing.
     pub fn read_oam(&self, addr: u16) -> u8 {
+        if self.oam_busy() {
+            return 0xFF;
+        }
         self.oam[(addr - 0xFE00) as usize]
     }
 
+    /// Ignored during the sprite search and while drawing.
     pub fn write_oam(&mut self, addr: u16, value: u8) {
-        self.oam[(addr - 0xFE00) as usize] = value;
+        if !self.oam_busy() {
+            self.oam[(addr - 0xFE00) as usize] = value;
+        }
     }
 
     pub fn read_register(&self, addr: u16) -> u8 {
@@ -238,8 +261,10 @@ impl Ppu {
             0xFF4B => self.wx,
             0xFF4F => self.vbk | 0xFE,
             0xFF68 => self.bcps,
+            0xFF69 if self.drawing() => 0xFF,
             0xFF69 => self.bcpd[(self.bcps & 0x3F) as usize],
             0xFF6A => self.ocps,
+            0xFF6B if self.drawing() => 0xFF,
             0xFF6B => self.ocpd[(self.ocps & 0x3F) as usize],
             _ => 0xFF,
         }
@@ -268,15 +293,21 @@ impl Ppu {
             0xFF4B => self.wx = value,
             0xFF4F => self.vbk = value & 0x01,
             0xFF68 => self.bcps = value,
+            // While drawing the write is lost, but the index still moves on.
             0xFF69 => {
-                self.bcpd[(self.bcps & 0x3F) as usize] = value;
+                if !self.drawing() {
+                    self.bcpd[(self.bcps & 0x3F) as usize] = value;
+                }
                 if self.bcps & 0x80 != 0 {
                     self.bcps = (self.bcps & 0x80) | ((self.bcps + 1) & 0x3F);
                 }
             }
             0xFF6A => self.ocps = value,
+            // While drawing the write is lost, but the index still moves on.
             0xFF6B => {
-                self.ocpd[(self.ocps & 0x3F) as usize] = value;
+                if !self.drawing() {
+                    self.ocpd[(self.ocps & 0x3F) as usize] = value;
+                }
                 if self.ocps & 0x80 != 0 {
                     self.ocps = (self.ocps & 0x80) | ((self.ocps + 1) & 0x3F);
                 }
@@ -319,5 +350,92 @@ mod tests {
         ppu.write_register(0xFF40, 0x00);
         ppu.tick(DOTS_PER_LINE * 10);
         assert_eq!(ppu.ly(), 0);
+    }
+
+    // A new screen moved forward to the start of one mode, on the first line.
+    fn in_mode(mode: Mode) -> Ppu {
+        let mut ppu = Ppu::new();
+        ppu.tick(match mode {
+            Mode::OamScan => 0,
+            Mode::Drawing => OAM_SCAN_DOTS,
+            Mode::HBlank => OAM_SCAN_DOTS + DRAWING_DOTS,
+            Mode::VBlank => DOTS_PER_LINE * SCREEN_HEIGHT as u32,
+        });
+        assert_eq!(ppu.mode(), mode);
+        ppu
+    }
+
+    #[test]
+    fn video_ram_is_shut_only_while_drawing() {
+        for (mode, open) in [
+            (Mode::OamScan, true),
+            (Mode::Drawing, false),
+            (Mode::HBlank, true),
+            (Mode::VBlank, true),
+        ] {
+            let mut ppu = in_mode(mode);
+            ppu.write_vram(0x8000, 0x42);
+            assert_eq!(
+                ppu.read_vram(0x8000),
+                if open { 0x42 } else { 0xFF },
+                "{mode:?}"
+            );
+        }
+    }
+
+    // Reading 0xFF alone cannot prove the write was lost, so look again once it is open.
+    #[test]
+    fn a_write_while_drawing_is_lost() {
+        let mut ppu = in_mode(Mode::Drawing);
+        ppu.write_vram(0x8000, 0x42);
+        ppu.write_oam(0xFE00, 0x42);
+        ppu.tick(DRAWING_DOTS); // on to the blank at the end of the line
+        assert_eq!(ppu.read_vram(0x8000), 0x00);
+        assert_eq!(ppu.read_oam(0xFE00), 0x00);
+    }
+
+    #[test]
+    fn the_sprite_table_is_shut_from_the_search_until_drawing_ends() {
+        for (mode, open) in [
+            (Mode::OamScan, false),
+            (Mode::Drawing, false),
+            (Mode::HBlank, true),
+            (Mode::VBlank, true),
+        ] {
+            let mut ppu = in_mode(mode);
+            ppu.write_oam(0xFE00, 0x42);
+            assert_eq!(
+                ppu.read_oam(0xFE00),
+                if open { 0x42 } else { 0xFF },
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn palettes_are_shut_while_drawing_but_the_index_still_moves() {
+        let mut ppu = in_mode(Mode::Drawing);
+        ppu.write_register(0xFF68, 0x80); // index 0, step after each write
+        ppu.write_register(0xFF69, 0x12);
+        assert_eq!(ppu.read_register(0xFF69), 0xFF);
+        assert_eq!(
+            ppu.read_register(0xFF68) & 0x3F,
+            1,
+            "the index moved anyway"
+        );
+
+        ppu.tick(DRAWING_DOTS);
+        ppu.write_register(0xFF68, 0x00);
+        assert_eq!(ppu.read_register(0xFF69), 0xFF, "slot 0 kept its old value");
+    }
+
+    #[test]
+    fn everything_is_open_with_the_screen_off() {
+        let mut ppu = in_mode(Mode::Drawing);
+        ppu.write_register(0xFF40, 0x00);
+        ppu.write_vram(0x8000, 0x42);
+        ppu.write_oam(0xFE00, 0x42);
+        assert_eq!(ppu.read_vram(0x8000), 0x42);
+        assert_eq!(ppu.read_oam(0xFE00), 0x42);
     }
 }

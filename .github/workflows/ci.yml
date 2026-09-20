@@ -33,10 +33,14 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true # the test ROMs
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.arch }}
       - run: cargo test --workspace --all-targets
+        env:
+          RUSTBOY_REQUIRE_TEST_ROMS: 1 # fail rather than skip if the ROMs did not arrive
       - run: cargo build --workspace
 
   # The browser host is only ever built as a library.
