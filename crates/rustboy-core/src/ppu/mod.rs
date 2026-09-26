@@ -23,6 +23,14 @@ const DRAWING_DOTS: u32 = 172;
 /// pale green-white a real screen shows when nothing has been drawn.
 const BLANK: [u8; 4] = [0xE0, 0xF8, 0xD0, 0xFF];
 
+// leftmost pixel is bit 7. low byte gives bottom bit of colour, high byte top bit.
+#[allow(dead_code, reason = "TODO(PR-14): used once fetcher exists")]
+pub(crate) fn pixel_colour(low: u8, high: u8, bit: u8) -> u8 {
+    let low_bit = (low >> bit) & 1;
+    let high_bit = (high >> bit) & 1;
+    high_bit << 1 | low_bit
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     HBlank = 0,
@@ -229,6 +237,41 @@ impl Ppu {
         }
     }
 
+    // screen reads its own memory directly, never blocked like CPU is
+    #[allow(dead_code, reason = "TODO(PR-14): used once fetcher exists")]
+    fn vram_at(&self, bank: usize, addr: u16) -> u8 {
+        self.vram[bank * VRAM_BANK_SIZE + (addr as usize - 0x8000)]
+    }
+
+    // LCDC bit 3 picks which of two maps holds background tile numbers
+    #[allow(dead_code, reason = "TODO(PR-14): used once fetcher exists")]
+    fn bg_map_base(&self) -> u16 {
+        if self.lcdc & 0x08 != 0 {
+            0x9C00
+        } else {
+            0x9800
+        }
+    }
+
+    // one entry of a 32 by 32 map, wrapping round at edges
+    #[allow(dead_code, reason = "TODO(PR-14): used once fetcher exists")]
+    fn map_tile(&self, base: u16, tile_x: u8, tile_y: u8) -> u8 {
+        let offset = (tile_y as u16 % 32) * 32 + (tile_x as u16 % 32);
+        self.vram_at(0, base + offset)
+    }
+
+    // two bytes holding one row of a tile. LCDC bit 4 picks how tile numbers are counted.
+    #[allow(dead_code, reason = "TODO(PR-14): used once fetcher exists")]
+    fn tile_row(&self, tile: u8, row: u8, bank: usize) -> (u8, u8) {
+        let address = if self.lcdc & 0x10 != 0 {
+            0x8000 + tile as u16 * 16 // counted from 8000 upwards
+        } else {
+            // counted from 9000, and numbers above 127 mean backwards
+            0x9000u16.wrapping_add((tile as i8 as i16 * 16) as u16)
+        } + row as u16 * 2;
+        (self.vram_at(bank, address), self.vram_at(bank, address + 1))
+    }
+
     fn vram_index(&self, addr: u16) -> usize {
         (self.vbk as usize & 1) * VRAM_BANK_SIZE + (addr as usize - 0x8000)
     }
@@ -406,6 +449,68 @@ mod tests {
 
     // both HBlank source and LY match are on, so only first rise counts
     // straight from TCAGBD: on last line LY reads 153 for 4 dots, then 0
+    #[test]
+    fn a_pixel_takes_one_bit_from_each_byte() {
+        let (low, high) = (0b1010_0000, 0b1100_0000);
+        assert_eq!(pixel_colour(low, high, 7), 3); // both bits on
+        assert_eq!(pixel_colour(low, high, 6), 2); // only high
+        assert_eq!(pixel_colour(low, high, 5), 1); // only low
+        assert_eq!(pixel_colour(low, high, 4), 0); // neither
+    }
+
+    #[test]
+    fn lcdc_bit_3_picks_which_map_is_read() {
+        let mut ppu = Ppu::new();
+        ppu.write_vram(0x9800, 0x11);
+        ppu.write_vram(0x9C00, 0x22);
+
+        ppu.write_register(0xFF40, 0x80); // bit 3 off
+        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0), 0x11);
+
+        ppu.write_register(0xFF40, 0x88); // bit 3 on
+        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0), 0x22);
+    }
+
+    #[test]
+    fn a_map_wraps_round_after_32_tiles() {
+        let mut ppu = Ppu::new();
+        ppu.write_vram(0x9800, 0x42);
+        assert_eq!(
+            ppu.map_tile(0x9800, 32, 32),
+            0x42,
+            "tile 32 is tile 0 again"
+        );
+    }
+
+    // 8000 mode counts tiles upwards from 8000
+    #[test]
+    fn tile_rows_come_from_8000_when_bit_4_is_on() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x90); // bit 4 on
+        ppu.write_vram(0x8010, 0xAB); // tile 1, row 0
+        ppu.write_vram(0x8011, 0xCD);
+        assert_eq!(ppu.tile_row(1, 0, 0), (0xAB, 0xCD));
+
+        ppu.write_vram(0x801E, 0x12); // tile 1, row 7
+        ppu.write_vram(0x801F, 0x34);
+        assert_eq!(ppu.tile_row(1, 7, 0), (0x12, 0x34));
+    }
+
+    // 8800 mode counts from 9000, and tile numbers above 127 count backwards
+    #[test]
+    fn tile_rows_count_backwards_when_bit_4_is_off() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x80); // bit 4 off
+        ppu.write_vram(0x9000, 0x0A);
+        assert_eq!(ppu.tile_row(0, 0, 0).0, 0x0A, "tile 0 sits at 9000");
+
+        ppu.write_vram(0x8800, 0x0B);
+        assert_eq!(ppu.tile_row(128, 0, 0).0, 0x0B, "tile 128 is 128 back");
+
+        ppu.write_vram(0x8FF0, 0x0C);
+        assert_eq!(ppu.tile_row(255, 0, 0).0, 0x0C, "tile 255 is one back");
+    }
+
     #[test]
     fn ly_shows_153_for_only_four_dots() {
         let mut ppu = Ppu::new();
