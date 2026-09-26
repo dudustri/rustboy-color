@@ -33,8 +33,20 @@ impl Fetcher {
         self.second_dot = false;
     }
 
-    // TODO(PR-14): move one dot forward through five steps.
-    pub fn tick(&mut self) {
-        todo!("PR-14: background fetcher")
+    /// first four steps last two dots each. true on second dot, when step happens.
+    pub fn ready(&mut self) -> bool {
+        self.second_dot = !self.second_dot;
+        !self.second_dot
+    }
+
+    /// move on to next of five steps.
+    pub fn next(&mut self) {
+        self.step = match self.step {
+            FetchStep::TileNumber => FetchStep::TileDataLow,
+            FetchStep::TileDataLow => FetchStep::TileDataHigh,
+            FetchStep::TileDataHigh => FetchStep::Sleep,
+            FetchStep::Sleep => FetchStep::Push,
+            FetchStep::Push => FetchStep::TileNumber,
+        };
     }
 }
