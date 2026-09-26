@@ -23,6 +23,13 @@ const DRAWING_DOTS: u32 = 172;
 /// pale green-white a real screen shows when nothing has been drawn.
 const BLANK: [u8; 4] = [0xE0, 0xF8, 0xD0, 0xFF];
 
+// leftmost pixel is bit 7. low byte gives bottom bit of colour, high byte top bit.
+pub(crate) fn pixel_colour(low: u8, high: u8, bit: u8) -> u8 {
+    let low_bit = (low >> bit) & 1;
+    let high_bit = (high >> bit) & 1;
+    high_bit << 1 | low_bit
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     HBlank = 0,
@@ -151,6 +158,7 @@ impl Ppu {
                 }
             }
             Mode::Drawing => {
+                self.fetch_dot();
                 if self.dot >= OAM_SCAN_DOTS + DRAWING_DOTS {
                     self.render_line();
                     self.mode = Mode::HBlank;
@@ -227,6 +235,81 @@ impl Ppu {
         for pixel in self.framebuffer[start..end].chunks_exact_mut(4) {
             pixel.copy_from_slice(&BLANK);
         }
+    }
+
+    // screen reads its own memory directly, never blocked like CPU is
+    // one dot of fetcher. four steps of two dots, then a push retried until there is room.
+    fn fetch_dot(&mut self) {
+        if self.fetcher.step != FetchStep::Push && !self.fetcher.ready() {
+            return;
+        }
+        let line = self.ly.wrapping_add(self.scy);
+        match self.fetcher.step {
+            FetchStep::TileNumber => {
+                let tile_x = (self.scx / 8).wrapping_add(self.fetcher.tile_x);
+                self.fetcher.tile_number = self.map_tile(self.bg_map_base(), tile_x, line / 8);
+                self.fetcher.next();
+            }
+            FetchStep::TileDataLow => {
+                self.fetcher.data_low = self.tile_row(self.fetcher.tile_number, line % 8, 0).0;
+                self.fetcher.next();
+            }
+            FetchStep::TileDataHigh => {
+                self.fetcher.data_high = self.tile_row(self.fetcher.tile_number, line % 8, 0).1;
+                self.fetcher.next();
+            }
+            FetchStep::Sleep => {
+                self.fetcher.next();
+                self.push_row(); // try straight away, so a tile takes eight dots
+            }
+            FetchStep::Push => self.push_row(),
+        }
+    }
+
+    // hand 8 pixels to queue, leftmost first. a queue with no room keeps fetcher waiting.
+    fn push_row(&mut self) {
+        if self.bg_fifo.len() > 8 {
+            return;
+        }
+        for bit in (0..8).rev() {
+            self.bg_fifo.push(Pixel {
+                color: pixel_colour(self.fetcher.data_low, self.fetcher.data_high, bit),
+                palette: 0,
+                priority: false,
+            });
+        }
+        self.fetcher.tile_x = self.fetcher.tile_x.wrapping_add(1);
+        self.fetcher.next();
+    }
+
+    fn vram_at(&self, bank: usize, addr: u16) -> u8 {
+        self.vram[bank * VRAM_BANK_SIZE + (addr as usize - 0x8000)]
+    }
+
+    // LCDC bit 3 picks which of two maps holds background tile numbers
+    fn bg_map_base(&self) -> u16 {
+        if self.lcdc & 0x08 != 0 {
+            0x9C00
+        } else {
+            0x9800
+        }
+    }
+
+    // one entry of a 32 by 32 map, wrapping round at edges
+    fn map_tile(&self, base: u16, tile_x: u8, tile_y: u8) -> u8 {
+        let offset = (tile_y as u16 % 32) * 32 + (tile_x as u16 % 32);
+        self.vram_at(0, base + offset)
+    }
+
+    // two bytes holding one row of a tile. LCDC bit 4 picks how tile numbers are counted.
+    fn tile_row(&self, tile: u8, row: u8, bank: usize) -> (u8, u8) {
+        let address = if self.lcdc & 0x10 != 0 {
+            0x8000 + tile as u16 * 16 // counted from 8000 upwards
+        } else {
+            // counted from 9000, and numbers above 127 mean backwards
+            0x9000u16.wrapping_add((tile as i8 as i16 * 16) as u16)
+        } + row as u16 * 2;
+        (self.vram_at(bank, address), self.vram_at(bank, address + 1))
     }
 
     fn vram_index(&self, addr: u16) -> usize {
@@ -406,6 +489,133 @@ mod tests {
 
     // both HBlank source and LY match are on, so only first rise counts
     // straight from TCAGBD: on last line LY reads 153 for 4 dots, then 0
+    // a map with one tile, and that tile's first row, ready to fetch
+    fn ppu_with_one_tile() -> Ppu {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x90); // screen on, tiles counted from 8000
+        ppu.write_vram(0x9800, 1); // top left of map is tile 1
+        ppu.write_vram(0x8010, 0b1010_0000); // tile 1, row 0, low byte
+        ppu.write_vram(0x8011, 0b1100_0000); // high byte
+        ppu
+    }
+
+    #[test]
+    fn a_tile_row_takes_eight_dots_to_reach_the_queue() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.tick(OAM_SCAN_DOTS); // into drawing, fetcher starts
+
+        ppu.tick(6);
+        assert_eq!(ppu.bg_fifo.len(), 0, "still reading it out of memory");
+
+        ppu.tick(2);
+        assert_eq!(ppu.bg_fifo.len(), 8, "all eight arrive together");
+    }
+
+    #[test]
+    fn pixels_arrive_leftmost_first() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.tick(OAM_SCAN_DOTS + 8);
+        assert_eq!(ppu.bg_fifo.pop().map(|p| p.color), Some(3)); // both bits on
+        assert_eq!(ppu.bg_fifo.pop().map(|p| p.color), Some(2)); // only high
+        assert_eq!(ppu.bg_fifo.pop().map(|p| p.color), Some(1)); // only low
+        assert_eq!(ppu.bg_fifo.pop().map(|p| p.color), Some(0));
+    }
+
+    #[test]
+    fn fetcher_walks_along_map_one_tile_at_a_time() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.write_vram(0x9801, 2); // second tile along
+        ppu.write_vram(0x8020, 0xFF); // tile 2, row 0
+        ppu.write_vram(0x8021, 0xFF);
+
+        ppu.tick(OAM_SCAN_DOTS + 8);
+        assert_eq!(ppu.fetcher.tile_x, 1, "moved on to next tile");
+        for _ in 0..8 {
+            ppu.bg_fifo.pop(); // make room so next row can be pushed
+        }
+
+        ppu.tick(8);
+        assert_eq!(
+            ppu.bg_fifo.pop().map(|p| p.color),
+            Some(3),
+            "tile 2 is all 3s"
+        );
+    }
+
+    // a full queue stalls fetcher, which is what makes some lines take longer
+    #[test]
+    fn a_full_queue_makes_the_fetcher_wait() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.tick(OAM_SCAN_DOTS + 8);
+        assert_eq!(ppu.bg_fifo.len(), 8);
+
+        ppu.tick(16); // plenty of time for another row
+        assert_eq!(ppu.bg_fifo.len(), 16, "one more row fitted, then it waits");
+        assert_eq!(ppu.fetcher.step, FetchStep::Push, "stuck trying to push");
+    }
+
+    #[test]
+    fn a_pixel_takes_one_bit_from_each_byte() {
+        let (low, high) = (0b1010_0000, 0b1100_0000);
+        assert_eq!(pixel_colour(low, high, 7), 3); // both bits on
+        assert_eq!(pixel_colour(low, high, 6), 2); // only high
+        assert_eq!(pixel_colour(low, high, 5), 1); // only low
+        assert_eq!(pixel_colour(low, high, 4), 0); // neither
+    }
+
+    #[test]
+    fn lcdc_bit_3_picks_which_map_is_read() {
+        let mut ppu = Ppu::new();
+        ppu.write_vram(0x9800, 0x11);
+        ppu.write_vram(0x9C00, 0x22);
+
+        ppu.write_register(0xFF40, 0x80); // bit 3 off
+        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0), 0x11);
+
+        ppu.write_register(0xFF40, 0x88); // bit 3 on
+        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0), 0x22);
+    }
+
+    #[test]
+    fn a_map_wraps_round_after_32_tiles() {
+        let mut ppu = Ppu::new();
+        ppu.write_vram(0x9800, 0x42);
+        assert_eq!(
+            ppu.map_tile(0x9800, 32, 32),
+            0x42,
+            "tile 32 is tile 0 again"
+        );
+    }
+
+    // 8000 mode counts tiles upwards from 8000
+    #[test]
+    fn tile_rows_come_from_8000_when_bit_4_is_on() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x90); // bit 4 on
+        ppu.write_vram(0x8010, 0xAB); // tile 1, row 0
+        ppu.write_vram(0x8011, 0xCD);
+        assert_eq!(ppu.tile_row(1, 0, 0), (0xAB, 0xCD));
+
+        ppu.write_vram(0x801E, 0x12); // tile 1, row 7
+        ppu.write_vram(0x801F, 0x34);
+        assert_eq!(ppu.tile_row(1, 7, 0), (0x12, 0x34));
+    }
+
+    // 8800 mode counts from 9000, and tile numbers above 127 count backwards
+    #[test]
+    fn tile_rows_count_backwards_when_bit_4_is_off() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x80); // bit 4 off
+        ppu.write_vram(0x9000, 0x0A);
+        assert_eq!(ppu.tile_row(0, 0, 0).0, 0x0A, "tile 0 sits at 9000");
+
+        ppu.write_vram(0x8800, 0x0B);
+        assert_eq!(ppu.tile_row(128, 0, 0).0, 0x0B, "tile 128 is 128 back");
+
+        ppu.write_vram(0x8FF0, 0x0C);
+        assert_eq!(ppu.tile_row(255, 0, 0).0, 0x0C, "tile 255 is one back");
+    }
+
     #[test]
     fn ly_shows_153_for_only_four_dots() {
         let mut ppu = Ppu::new();
