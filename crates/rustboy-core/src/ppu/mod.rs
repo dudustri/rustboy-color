@@ -262,7 +262,11 @@ impl Ppu {
             if sprite.x != here {
                 continue;
             }
-            let row = (self.ly + 16 - sprite.y) % if tall { 16 } else { 8 };
+            let height = if tall { 16 } else { 8 };
+            let mut row = (self.ly + 16 - sprite.y) % height;
+            if sprite.attributes & 0x40 != 0 {
+                row = height - 1 - row; // flipped top to bottom
+            }
             let tile = if tall {
                 sprite.tile & 0xFE
             } else {
@@ -272,8 +276,9 @@ impl Ppu {
             let at = 0x8000 + tile as u16 * 16 + row as u16 * 2;
             let (low, high) = (self.vram_at(0, at), self.vram_at(0, at + 1));
             let palette = (sprite.attributes >> 4) & 1;
+            let flipped = sprite.attributes & 0x20 != 0; // mirrored left to right
             self.obj_fifo.overlay(std::array::from_fn(|step| Pixel {
-                color: pixel_colour(low, high, 7 - step as u8),
+                color: pixel_colour(low, high, if flipped { step as u8 } else { 7 - step as u8 }),
                 palette,
                 priority: sprite.attributes & 0x80 != 0,
             }));
@@ -292,14 +297,15 @@ impl Ppu {
             return;
         }
 
-        let background = if self.lcdc & 0x01 == 0 {
-            0 // background switched off leaves screen blank
+        // background switched off leaves screen blank, and sprites then always win
+        let (behind, background) = if self.lcdc & 0x01 == 0 {
+            (0, 0)
         } else {
-            (self.bgp >> (pixel.color * 2)) & 0x03
+            (pixel.color, (self.bgp >> (pixel.color * 2)) & 0x03)
         };
-        // a sprite's colour 0 is see through, so background keeps that spot
+        // a sprite's colour 0 is see through, and one marked low can also hide behind
         let shade = match self.obj_fifo.pop() {
-            Some(sprite) if sprite.color != 0 => {
+            Some(sprite) if sprite.color != 0 && !(sprite.priority && behind != 0) => {
                 let palette = if sprite.palette == 0 {
                     self.obp0
                 } else {
@@ -1330,5 +1336,78 @@ mod tests {
 
         assert_eq!(shade_at(&ppu, 72, 0), SHADES[3], "tenth sprite still draws");
         assert_eq!(shade_at(&ppu, 80, 0), SHADES[1], "eleventh is dropped");
+    }
+
+    // tile 3 is clear on its left half and solid on its right
+    #[test]
+    fn a_sprite_can_be_mirrored_left_to_right() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 3, 0x20));
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(
+            shade_at(&ppu, 41, 0),
+            SHADES[3],
+            "solid half is on left now"
+        );
+        assert_eq!(shade_at(&ppu, 45, 0), SHADES[1], "and clear half on right");
+    }
+
+    #[test]
+    fn a_sprite_can_be_turned_upside_down() {
+        let mut ppu = ppu_with_sprites();
+        for row in 0..8 {
+            ppu.write_vram(0x8040 + row * 2, if row == 0 { 0xFF } else { 0 }); // tile 4 solid on top row only
+            ppu.write_vram(0x8041 + row * 2, if row == 0 { 0xFF } else { 0 });
+        }
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 4, 0x40));
+        ppu.tick(DOTS_PER_LINE * 8);
+
+        assert_eq!(shade_at(&ppu, 40, 0), SHADES[1], "its top row is empty now");
+        assert_eq!(
+            shade_at(&ppu, 40, 7),
+            SHADES[3],
+            "solid row moved to bottom"
+        );
+    }
+
+    // attribute bit 7 puts a sprite under any background that is not blank
+    #[test]
+    fn a_low_sprite_hides_behind_the_background() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0x80));
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 40, 0), SHADES[1], "background wins");
+    }
+
+    #[test]
+    fn a_low_sprite_still_shows_over_blank_background() {
+        let mut ppu = ppu_with_sprites();
+        for square in 0..32 * 32 {
+            ppu.write_vram(0x9800 + square, 0); // map now points at an empty tile
+        }
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0x80));
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 40, 0), SHADES[3], "nothing to hide behind");
+    }
+
+    #[test]
+    fn switching_the_background_off_lets_every_sprite_through() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0x80));
+        ppu.write_register(0xFF40, 0x92); // background bit off, sprites on
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 40, 0), SHADES[3]);
+    }
+
+    #[test]
+    fn a_tall_sprite_swaps_its_halves_when_turned_over() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0x40));
+        ppu.write_register(0xFF40, 0x97); // sprites are 8 by 16 now
+        ppu.tick(DOTS_PER_LINE * 9);
+
+        assert_eq!(shade_at(&ppu, 41, 0), SHADES[1], "lower tile is on top now");
+        assert_eq!(shade_at(&ppu, 40, 8), SHADES[3], "and upper tile below");
     }
 }
