@@ -77,6 +77,8 @@ pub struct Ppu {
     drawn: u8,           // pixels put on screen so far this line
     discard: u8,         // leftmost pixels to throw away, for fine scrolling
     on_window: bool,     // fetcher has switched over to window for rest of line
+    stall: u8,           // dots drawing is paused for while a sprite is fetched
+    fetched: u16,        // which of this line's sprites already went into queue
     fetcher: Fetcher,    // builds background pixels 8 at a time
     bg_fifo: PixelFifo,  // background pixels waiting their turn
     obj_fifo: PixelFifo, // sprite pixels waiting to be mixed in
@@ -112,6 +114,8 @@ impl Ppu {
             drawn: 0,
             discard: 0,
             on_window: false,
+            stall: 0,
+            fetched: 0,
             fetcher: Fetcher::new(),
             bg_fifo: PixelFifo::new(),
             obj_fifo: PixelFifo::new(),
@@ -171,14 +175,20 @@ impl Ppu {
                     self.drawn = 0;
                     self.discard = self.scx % 8; // scrolling within a tile
                     self.on_window = false;
+                    self.stall = 0;
+                    self.fetched = 0;
                     self.obj_fifo.clear();
                 }
             }
             Mode::Drawing => {
                 self.start_window();
                 self.fetch_sprites();
-                self.draw_dot();
-                self.fetch_dot();
+                if self.stall > 0 {
+                    self.stall -= 1; // fetching a sprite holds everything up
+                } else {
+                    self.draw_dot();
+                    self.fetch_dot();
+                }
                 if self.drawn as usize >= SCREEN_WIDTH {
                     self.mode = Mode::HBlank; // line is done whenever last pixel is out
                 }
@@ -259,9 +269,11 @@ impl Ppu {
         let tall = self.lcdc & 0x04 != 0;
         for index in 0..self.scan.visible().len() {
             let sprite = self.scan.visible()[index];
-            if sprite.x != here {
+            if sprite.x != here || self.fetched & (1 << index) != 0 {
                 continue;
             }
+            self.fetched |= 1 << index;
+            self.stall += 6; // each sprite costs six dots to go and get
             let height = if tall { 16 } else { 8 };
             let mut row = (self.ly + 16 - sprite.y) % height;
             if sprite.attributes & 0x40 != 0 {
@@ -1409,5 +1421,44 @@ mod tests {
 
         assert_eq!(shade_at(&ppu, 41, 0), SHADES[1], "lower tile is on top now");
         assert_eq!(shade_at(&ppu, 40, 8), SHADES[3], "and upper tile below");
+    }
+
+    #[test]
+    fn each_sprite_on_a_line_costs_six_dots() {
+        for count in 0..4u8 {
+            let mut ppu = ppu_with_sprites();
+            for slot in 0..count as usize {
+                put_sprite(&mut ppu, slot, (16, 8 + 16 + slot as u8 * 8, 2, 0));
+            }
+            assert_eq!(
+                drawing_dots(&mut ppu),
+                MIN_DRAWING_DOTS + 6 * count as u32,
+                "{count} sprites"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sprite_is_only_fetched_once() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0));
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 47, 0), SHADES[3], "still just eight wide");
+        assert_eq!(shade_at(&ppu, 48, 0), SHADES[1]);
+    }
+
+    // leftmost sprite is fetched first, so it wins wherever two overlap
+    #[test]
+    fn the_leftmost_sprite_wins_even_when_it_is_later_in_the_table() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 44, 2, 0)); // solid, starts further right
+        put_sprite(&mut ppu, 1, (16, 8 + 40, 3, 0x10)); // palette 1, starts left
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(
+            shade_at(&ppu, 45, 0),
+            SHADES[0],
+            "left sprite's solid half beats one behind it"
+        );
     }
 }
