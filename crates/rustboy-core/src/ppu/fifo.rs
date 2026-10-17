@@ -47,6 +47,21 @@ impl PixelFifo {
         self.len += 1;
     }
 
+    /// lay 8 pixels over front of queue. earlier sprite keeps any spot it already filled.
+    pub fn overlay(&mut self, pixels: [Pixel; 8]) {
+        for (step, pixel) in pixels.into_iter().enumerate() {
+            let slot = (self.head + step) % CAPACITY;
+            if step < self.len {
+                if self.queue[slot].color == 0 {
+                    self.queue[slot] = pixel; // nothing there yet, so this sprite shows
+                }
+            } else {
+                self.queue[slot] = pixel;
+                self.len += 1;
+            }
+        }
+    }
+
     /// take next pixel off front, or `None` when nothing is waiting.
     pub fn pop(&mut self) -> Option<Pixel> {
         if self.len == 0 {
