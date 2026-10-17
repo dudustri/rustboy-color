@@ -1,7 +1,7 @@
 //! sends every address to right chip. full map is in `docs/architecture.md` section 2.
 
 use crate::apu::Apu;
-use crate::cartridge::Cartridge;
+use crate::cartridge::{Cartridge, CgbFlag};
 use crate::joypad::Joypad;
 use crate::ppu::Ppu;
 use crate::serial::Serial;
@@ -38,9 +38,14 @@ pub struct Bus {
 
 impl Bus {
     pub fn new(cartridge: Option<Cartridge>) -> Self {
+        let mut ppu = Ppu::new();
+        // a colour game says so in its header, and only then are palettes real colours
+        ppu.cgb = cartridge
+            .as_ref()
+            .is_some_and(|c| c.header.cgb != CgbFlag::None);
         Self {
             cartridge,
-            ppu: Ppu::new(),
+            ppu,
             apu: Apu::new(),
             timer: Timer::new(),
             joypad: Joypad::new(),

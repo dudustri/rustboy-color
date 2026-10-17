@@ -32,6 +32,18 @@ const SHADES: [[u8; 4]; 4] = [
     [0x08, 0x18, 0x20, 0xFF],
 ];
 
+// one colour out of a palette table: 8 palettes of 4 colours, 2 bytes each
+fn colour_at(table: &[u8; 64], palette: u8, colour: u8) -> [u8; 4] {
+    let at = (palette as usize % 8) * 8 + colour as usize * 2;
+    let packed = u16::from_le_bytes([table[at], table[at + 1]]);
+    // five bits per channel, stretched to eight so white stays white
+    let channel = |shift: u16| {
+        let five = ((packed >> shift) & 0x1F) as u8;
+        (five << 3) | (five >> 2)
+    };
+    [channel(0), channel(5), channel(10), 0xFF]
+}
+
 // leftmost pixel is bit 7. low byte gives bottom bit of colour, high byte top bit.
 pub(crate) fn pixel_colour(low: u8, high: u8, bit: u8) -> u8 {
     let low_bit = (low >> bit) & 1;
@@ -84,6 +96,7 @@ pub struct Ppu {
     obj_fifo: PixelFifo, // sprite pixels waiting to be mixed in
     scan: SpriteScan,    // sprites picked for this line
     stat_line: bool,     // shared interrupt line; only its rise asks for an interrupt
+    pub cgb: bool,       // colour console, so palettes hold real colours not greys
 }
 
 impl Ppu {
@@ -121,6 +134,7 @@ impl Ppu {
             obj_fifo: PixelFifo::new(),
             scan: SpriteScan::new(),
             stat_line: false,
+            cgb: false,
         }
     }
 
@@ -310,25 +324,33 @@ impl Ppu {
         }
 
         // background switched off leaves screen blank, and sprites then always win
-        let (behind, background) = if self.lcdc & 0x01 == 0 {
-            (0, 0)
+        let behind = if self.lcdc & 0x01 == 0 {
+            0
         } else {
-            (pixel.color, (self.bgp >> (pixel.color * 2)) & 0x03)
+            pixel.color
         };
         // a sprite's colour 0 is see through, and one marked low can also hide behind
-        let shade = match self.obj_fifo.pop() {
-            Some(sprite) if sprite.color != 0 && !(sprite.priority && behind != 0) => {
-                let palette = if sprite.palette == 0 {
+        let over = self
+            .obj_fifo
+            .pop()
+            .filter(|s| s.color != 0 && !(s.priority && behind != 0));
+
+        let colour = match over {
+            Some(sprite) if self.cgb => colour_at(&self.ocpd, sprite.palette, sprite.color),
+            Some(sprite) => {
+                let greys = if sprite.palette == 0 {
                     self.obp0
                 } else {
                     self.obp1
                 };
-                (palette >> (sprite.color * 2)) & 0x03
+                SHADES[((greys >> (sprite.color * 2)) & 0x03) as usize]
             }
-            _ => background,
+            None if self.cgb => colour_at(&self.bcpd, pixel.palette, behind),
+            None if self.lcdc & 0x01 == 0 => BLANK,
+            None => SHADES[((self.bgp >> (behind * 2)) & 0x03) as usize],
         };
         let at = (self.ly as usize * SCREEN_WIDTH + self.drawn as usize) * 4;
-        self.framebuffer[at..at + 4].copy_from_slice(&SHADES[shade as usize]);
+        self.framebuffer[at..at + 4].copy_from_slice(&colour);
         self.drawn += 1;
     }
 
@@ -1460,5 +1482,76 @@ mod tests {
             SHADES[0],
             "left sprite's solid half beats one behind it"
         );
+    }
+
+    // write one colour into a palette table through its index port
+    fn put_colour(ppu: &mut Ppu, index_port: u16, data_port: u16, slot: u8, colour: u16) {
+        ppu.write_register(index_port, 0x80 | (slot * 2)); // step on after each write
+        ppu.write_register(data_port, colour as u8);
+        ppu.write_register(data_port, (colour >> 8) as u8);
+    }
+
+    // a colour screen with a plain background tile everywhere
+    fn colour_ppu() -> Ppu {
+        let mut ppu = ppu_with_sprites();
+        ppu.cgb = true;
+        ppu
+    }
+
+    #[test]
+    fn five_bits_a_channel_stretch_out_to_eight() {
+        let mut table = [0u8; 64];
+        table[2..4].copy_from_slice(&0x7FFFu16.to_le_bytes()); // all channels full
+        assert_eq!(colour_at(&table, 0, 1), [0xFF, 0xFF, 0xFF, 0xFF]);
+
+        table[2..4].copy_from_slice(&0x001Fu16.to_le_bytes()); // red only
+        assert_eq!(colour_at(&table, 0, 1), [0xFF, 0x00, 0x00, 0xFF]);
+
+        table[2..4].copy_from_slice(&0x03E0u16.to_le_bytes()); // green only
+        assert_eq!(colour_at(&table, 0, 1), [0x00, 0xFF, 0x00, 0xFF]);
+
+        table[2..4].copy_from_slice(&0x7C00u16.to_le_bytes()); // blue only
+        assert_eq!(colour_at(&table, 0, 1), [0x00, 0x00, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn each_palette_holds_four_colours_of_its_own() {
+        let mut table = [0u8; 64];
+        table[8 * 3 + 2 * 2..][..2].copy_from_slice(&0x001Fu16.to_le_bytes());
+        assert_eq!(colour_at(&table, 3, 2), [0xFF, 0x00, 0x00, 0xFF]);
+        assert_eq!(colour_at(&table, 3, 1), [0x00, 0x00, 0x00, 0xFF]);
+        assert_eq!(colour_at(&table, 2, 2), [0x00, 0x00, 0x00, 0xFF]);
+    }
+
+    #[test]
+    fn a_colour_background_uses_real_colours_not_greys() {
+        let mut ppu = colour_ppu();
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 1, 0x001F); // background colour 1 is red
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 40, 0), [0xFF, 0x00, 0x00, 0xFF]);
+    }
+
+    #[test]
+    fn a_colour_sprite_reads_its_own_table() {
+        let mut ppu = colour_ppu();
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 1, 0x001F); // background red
+        put_colour(&mut ppu, 0xFF6A, 0xFF6B, 3, 0x7C00); // sprite colour 3 is blue
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0));
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(
+            shade_at(&ppu, 39, 0),
+            [0xFF, 0x00, 0x00, 0xFF],
+            "background"
+        );
+        assert_eq!(shade_at(&ppu, 40, 0), [0x00, 0x00, 0xFF, 0xFF], "sprite");
+    }
+
+    #[test]
+    fn an_old_game_still_gets_greys() {
+        let mut ppu = ppu_with_sprites();
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 1, 0x001F);
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 40, 0), SHADES[1], "palette table is ignored");
     }
 }
