@@ -6,7 +6,6 @@ pub enum FetchStep {
     TileNumber,
     TileDataLow,
     TileDataHigh,
-    Sleep,
     Push,
 }
 
@@ -19,6 +18,7 @@ pub struct Fetcher {
     pub data_high: u8,    // second half; two together give each pixel its colour
     pub window_line: u8,  // window counts its own lines, apart from one being drawn
     pub second_dot: bool, // every step lasts two dots; this marks second
+    pub warming_up: bool, // first fetch of a line is thrown away, as hardware does
 }
 
 impl Fetcher {
@@ -31,6 +31,7 @@ impl Fetcher {
         self.step = FetchStep::TileNumber;
         self.tile_x = 0;
         self.second_dot = false;
+        self.warming_up = true;
     }
 
     /// first four steps last two dots each. true on second dot, when step happens.
@@ -44,8 +45,7 @@ impl Fetcher {
         self.step = match self.step {
             FetchStep::TileNumber => FetchStep::TileDataLow,
             FetchStep::TileDataLow => FetchStep::TileDataHigh,
-            FetchStep::TileDataHigh => FetchStep::Sleep,
-            FetchStep::Sleep => FetchStep::Push,
+            FetchStep::TileDataHigh => FetchStep::Push,
             FetchStep::Push => FetchStep::TileNumber,
         };
     }
