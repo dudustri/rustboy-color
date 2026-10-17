@@ -137,7 +137,7 @@ That waiting is what makes some lines slower than others.
 |---|---|
 | very first fetch of a line is thrown away | 12, always |
 | line starts part way into a tile, so some pixels are binned | up to 7 |
-| window, when we add it | 6 |
+| window starts partway along a line | 6 |
 | each sprite, when we add them | 6 to 11 |
 
 The first one is a hardware quirk. At the start of each line the fetcher does a
@@ -149,8 +149,8 @@ The second one is scrolling. Scroll sideways by 3 pixels and the first tile is
 only three quarters visible, but tiles can only be fetched whole, so 3 pixels
 get fetched and binned.
 
-**This is what changed in this PR.** Drawing used to end on a fixed count of
-172. Now it ends when pixel number 160 actually leaves the queue. A slow line
+Drawing does not end on a fixed count of 172. It ends when pixel number 160
+actually leaves the queue. A slow line
 genuinely takes longer, and eats into the rest at the end, because the 456 is
 fixed. Games with smooth scrolling rely on exactly this.
 
@@ -158,19 +158,18 @@ fixed. Games with smooth scrolling rely on exactly this.
 
 ## It works
 
-A test drops eight letter tiles into video memory, points the map at them, and
+A test drops four letter tiles into video memory, points the map at them, and
 runs one full frame. Then it reads the finished picture back and prints the
 darkest pixels as `#`:
 
 ```
-    #               #                   #
-    #               #                   #
- ####   #   #    ####    ####           ####     ###    #   #
-#   #   #   #   #   #   #               #   #   #   #   #   #
-#   #   #   #   #   #    ###            #   #   #   #   #   #
-#   #   #   #   #   #       #           #   #   #   #    ####
- ####    ####    ####   ####            ####     ###        #
-                                                         ###
+    #               #
+    #               #
+ ####   #   #    ####    ####
+#   #   #   #   #   #   #
+#   #   #   #   #   #    ###
+#   #   #   #   #   #       #
+ ####    ####    ####   ####
 ```
 
 Not one pixel of that was typed by hand. Tiles went in; every pixel came back
@@ -179,11 +178,130 @@ It is `it_draws_a_word_on_screen` in `ppu/mod.rs`.
 
 ---
 
+## Three things stacked
+
+It helps to see all of it at once. There are three separate pictures, and only
+the last one is what you see.
+
+```
+1. background map : 256 x 256, far bigger than screen, wraps at every edge
+   +--------------------------------------------+
+   |                                            |
+   |            +------------------+            |
+   |            |                  |            |
+   |            |  what screen     |  <- SCX and SCY say where this
+   |            |  can reach       |     patch sits. Moving them is
+   |            |   160 x 144      |     how a world scrolls.
+   |            +------------------+            |
+   |                                            |
+   +--------------------------------------------+
+
+2. that patch, on its own                3. window laid over it
+   +------------------+                     +------------------+
+   |                  |                     |                  |
+   |                  |                     |                  |
+   |   background     |          ->      WY |- - - +-----------|
+   |                  |                     |  bg  |  window   |
+   |                  |                     |      |           |
+   +------------------+                     +------+-----------+
+                                                   ^
+                                                 WX - 7
+```
+
+The difference between the two layers is only this: **the background moves and
+the window does not.**
+
+Slide `SCX` and picture 1's patch slides with it, so the world scrolls. The
+window in picture 3 ignores `SCX` completely and stays exactly where `WX` and
+`WY` put it. That is the only reason both exist.
+
+And because the window has no map of its own to scroll around, it always reads
+from its top-left corner outwards. It has nowhere else to start.
+
+---
+
+## The window, a second layer
+
+The background scrolls. The **window** does not. It is pinned to the glass, and
+the world slides underneath it. Every status bar you have seen on a Game Boy is
+this: the hearts, the score, the text box at the bottom of a battle.
+
+Two registers put its corner somewhere:
+
+- `WY` is the row it starts on
+- `WX` is the column, **plus 7**. So `WX = 7` means the far left. Nobody knows
+  why the 7 is there; it is how the chip was wired.
+
+The surprise is that it is not a box. Once it starts, it runs to the right edge
+and to the bottom. Always.
+
+```
+     0        80       159
+   0 +-----------------+
+     |                 |
+     |   background    |
+  72 | - - - +---------|   <- WY
+     |  bg   | window  |
+ 143 +-------+---------+
+             ^ WX - 7
+```
+
+So a floating box in the middle is impossible. Games that want one draw it into
+the background instead, or build it out of sprites.
+
+### There is no second fetcher
+
+The same fetcher does both. When the line reaches the corner it is simply told
+three things: throw away the queue, read the other map, start again from tile
+zero. From then on it stays on the window until the line ends.
+
+That one-way switch is where the shape comes from. No rectangle is ever
+calculated.
+
+### Its own row counter
+
+The window does not use `LY`. It keeps a separate count that only goes up on
+lines where it actually drew something.
+
+Sounds fussy, but it is what lets a text box close and reopen without jumping:
+the lines where the window was off never moved its counter, so it carries on
+exactly where it stopped.
+
+### What it costs
+
+Throwing away the queue means the fetcher has to refill it, and refilling takes
+6 ticks. So a line with the window partway along takes 178 instead of 172. That
+cost is not coded anywhere, it just happens.
+
+One trap: if the window starts at the very first pixel, the line's own 12-tick
+warm up has to finish first, or drawing comes out at 166 and breaks the floor.
+
+### Seeing it
+
+Same trick as before: a word in the background, a window laid over it from row 4
+and column 32, read back out of the finished picture.
+
+```
+    #               #
+    #               #
+ ####   #   #    ####    ####
+#   #   #   #   #   #   #
+#   #   #   #   #   #    ###    ################
+#   #   #   #   #   #       #   ################
+ ####    ####    ####   ####    ################
+                                ################
+```
+
+Top rows are untouched. From row 4 the window cuts in at column 32 and takes
+everything to the right. `it_draws_a_window_over_the_background` in `ppu/mod.rs`.
+
+---
+
 ## Done and not done
 
 | | |
 |---|---|
 | background layer, scrolling, shades | done |
-| window, a second layer sitting on top | PR-15 |
+| window, a second layer | done |
 | sprites, things that move independently | PR-16 |
 | real colour instead of four greys | PR-17 |
