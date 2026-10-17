@@ -80,8 +80,7 @@ pub struct Ppu {
     fetcher: Fetcher,    // builds background pixels 8 at a time
     bg_fifo: PixelFifo,  // background pixels waiting their turn
     obj_fifo: PixelFifo, // sprite pixels waiting to be mixed in
-    #[allow(dead_code, reason = "TODO(PR-16): read by the sprite fetcher")]
-    scan: SpriteScan, // sprites picked for this line
+    scan: SpriteScan,    // sprites picked for this line
     stat_line: bool,     // shared interrupt line; only its rise asks for an interrupt
 }
 
@@ -165,7 +164,7 @@ impl Ppu {
         match self.mode {
             Mode::OamScan => {
                 if self.dot >= OAM_SCAN_DOTS {
-                    // TODO(PR-16): pick this line's sprites here.
+                    self.scan.scan(&self.oam, self.ly, self.lcdc & 0x04 != 0);
                     self.mode = Mode::Drawing;
                     self.fetcher.restart();
                     self.bg_fifo.clear();
