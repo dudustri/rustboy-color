@@ -176,6 +176,7 @@ impl Ppu {
             }
             Mode::Drawing => {
                 self.start_window();
+                self.fetch_sprites();
                 self.draw_dot();
                 self.fetch_dot();
                 if self.drawn as usize >= SCREEN_WIDTH {
@@ -249,6 +250,36 @@ impl Ppu {
 
     // TODO(PR-14..17): draw real pixels here instead of a blank line.
     // take one pixel off queue and put it on screen, once line has started properly
+    // every sprite starting at this pixel drops its 8 pixels into sprite queue
+    fn fetch_sprites(&mut self) {
+        if self.lcdc & 0x02 == 0 {
+            return; // sprites switched off
+        }
+        let here = self.drawn + 8;
+        let tall = self.lcdc & 0x04 != 0;
+        for index in 0..self.scan.visible().len() {
+            let sprite = self.scan.visible()[index];
+            if sprite.x != here {
+                continue;
+            }
+            let row = (self.ly + 16 - sprite.y) % if tall { 16 } else { 8 };
+            let tile = if tall {
+                sprite.tile & 0xFE
+            } else {
+                sprite.tile
+            };
+            // sprites always count tiles up from 8000, never backwards like background can
+            let at = 0x8000 + tile as u16 * 16 + row as u16 * 2;
+            let (low, high) = (self.vram_at(0, at), self.vram_at(0, at + 1));
+            let palette = (sprite.attributes >> 4) & 1;
+            self.obj_fifo.overlay(std::array::from_fn(|step| Pixel {
+                color: pixel_colour(low, high, 7 - step as u8),
+                palette,
+                priority: sprite.attributes & 0x80 != 0,
+            }));
+        }
+    }
+
     fn draw_dot(&mut self) {
         if self.drawn as usize >= SCREEN_WIDTH {
             return;
@@ -261,10 +292,22 @@ impl Ppu {
             return;
         }
 
-        let shade = if self.lcdc & 0x01 == 0 {
+        let background = if self.lcdc & 0x01 == 0 {
             0 // background switched off leaves screen blank
         } else {
             (self.bgp >> (pixel.color * 2)) & 0x03
+        };
+        // a sprite's colour 0 is see through, so background keeps that spot
+        let shade = match self.obj_fifo.pop() {
+            Some(sprite) if sprite.color != 0 => {
+                let palette = if sprite.palette == 0 {
+                    self.obp0
+                } else {
+                    self.obp1
+                };
+                (palette >> (sprite.color * 2)) & 0x03
+            }
+            _ => background,
         };
         let at = (self.ly as usize * SCREEN_WIDTH + self.drawn as usize) * 4;
         self.framebuffer[at..at + 4].copy_from_slice(&SHADES[shade as usize]);
@@ -1158,5 +1201,134 @@ mod tests {
             ]
             .join("\n")
         );
+    }
+
+    // background of shade 1, plus two sprite pictures to put over it
+    fn ppu_with_sprites() -> Ppu {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x93); // screen, background and sprites on
+        ppu.write_register(0xFF47, 0xE4); // background shades straight through
+        ppu.write_register(0xFF48, 0xE4); // sprite palette 0 straight through
+        ppu.write_register(0xFF49, 0x1B); // sprite palette 1 back to front
+        for row in 0..8 {
+            ppu.write_vram(0x8010 + row * 2, 0xFF); // tile 1 is shade 1 everywhere
+            ppu.write_vram(0x8020 + row * 2, 0xFF); // tile 2 is shade 3 everywhere
+            ppu.write_vram(0x8021 + row * 2, 0xFF);
+            ppu.write_vram(0x8030 + row * 2, 0x0F); // tile 3 is clear then shade 3
+            ppu.write_vram(0x8031 + row * 2, 0x0F);
+        }
+        for square in 0..32 * 32 {
+            ppu.write_vram(0x9800 + square, 1);
+        }
+        ppu
+    }
+
+    // one sprite entry: y, x, tile, attributes. written straight in, since
+    // a real game would only get at the table while screen is resting.
+    fn put_sprite(ppu: &mut Ppu, slot: usize, sprite: (u8, u8, u8, u8)) {
+        let at = slot * 4;
+        ppu.oam[at] = sprite.0;
+        ppu.oam[at + 1] = sprite.1;
+        ppu.oam[at + 2] = sprite.2;
+        ppu.oam[at + 3] = sprite.3;
+    }
+
+    #[test]
+    fn a_sprite_is_drawn_over_the_background() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0));
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(shade_at(&ppu, 39, 0), SHADES[1], "background up to sprite");
+        assert_eq!(shade_at(&ppu, 40, 0), SHADES[3], "sprite starts here");
+        assert_eq!(shade_at(&ppu, 47, 0), SHADES[3], "and is eight wide");
+        assert_eq!(shade_at(&ppu, 48, 0), SHADES[1], "background again after");
+    }
+
+    // colour 0 of a sprite is see through, unlike background where it is a shade
+    #[test]
+    fn a_sprites_clear_pixels_let_the_background_show() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 3, 0));
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(
+            shade_at(&ppu, 41, 0),
+            SHADES[1],
+            "clear half shows background"
+        );
+        assert_eq!(shade_at(&ppu, 45, 0), SHADES[3], "solid half shows sprite");
+    }
+
+    #[test]
+    fn a_sprite_can_use_either_of_its_two_palettes() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0x10)); // attribute bit 4 picks palette 1
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(
+            shade_at(&ppu, 40, 0),
+            SHADES[0],
+            "palette 1 turns shade 3 into 0"
+        );
+    }
+
+    #[test]
+    fn sprites_vanish_when_their_switch_is_off() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0));
+        ppu.write_register(0xFF40, 0x91); // sprite bit off
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 40, 0), SHADES[1]);
+    }
+
+    // where two sprites land on same spot, one earlier in table wins
+    #[test]
+    fn the_earlier_sprite_in_the_table_wins_an_overlap() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 3, 0x10)); // clear left, palette 1
+        put_sprite(&mut ppu, 1, (16, 8 + 40, 2, 0)); // solid, palette 0
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(
+            shade_at(&ppu, 45, 0),
+            SHADES[0],
+            "first sprite keeps its pixels"
+        );
+        assert_eq!(
+            shade_at(&ppu, 41, 0),
+            SHADES[3],
+            "second shows through first's clear half"
+        );
+    }
+
+    #[test]
+    fn a_tall_sprite_is_two_tiles_stacked() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0));
+        ppu.write_register(0xFF40, 0x97); // sprites are 8 by 16 now
+        ppu.tick(DOTS_PER_LINE * 9);
+        assert_eq!(
+            shade_at(&ppu, 40, 0),
+            SHADES[3],
+            "first line is tile 2, solid"
+        );
+        assert_eq!(
+            shade_at(&ppu, 41, 8),
+            SHADES[1],
+            "ninth line is tile 3, clear half"
+        );
+        assert_eq!(shade_at(&ppu, 45, 8), SHADES[3], "and tile 3's solid half");
+    }
+
+    #[test]
+    fn only_ten_sprites_land_on_one_line() {
+        let mut ppu = ppu_with_sprites();
+        for slot in 0..12usize {
+            put_sprite(&mut ppu, slot, (16, 8 + slot as u8 * 8, 2, 0));
+        }
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(shade_at(&ppu, 72, 0), SHADES[3], "tenth sprite still draws");
+        assert_eq!(shade_at(&ppu, 80, 0), SHADES[1], "eleventh is dropped");
     }
 }
