@@ -76,6 +76,7 @@ pub struct Ppu {
     // pixel pipeline, all still empty
     drawn: u8,           // pixels put on screen so far this line
     discard: u8,         // leftmost pixels to throw away, for fine scrolling
+    on_window: bool,     // fetcher has switched over to window for rest of line
     fetcher: Fetcher,    // builds background pixels 8 at a time
     bg_fifo: PixelFifo,  // background pixels waiting their turn
     obj_fifo: PixelFifo, // sprite pixels waiting to be mixed in
@@ -111,6 +112,7 @@ impl Ppu {
             ocpd: [0xFF; 64],
             drawn: 0,
             discard: 0,
+            on_window: false,
             fetcher: Fetcher::new(),
             bg_fifo: PixelFifo::new(),
             obj_fifo: PixelFifo::new(),
@@ -169,10 +171,12 @@ impl Ppu {
                     self.bg_fifo.clear();
                     self.drawn = 0;
                     self.discard = self.scx % 8; // scrolling within a tile
+                    self.on_window = false;
                     self.obj_fifo.clear();
                 }
             }
             Mode::Drawing => {
+                self.start_window();
                 self.draw_dot();
                 self.fetch_dot();
                 if self.drawn as usize >= SCREEN_WIDTH {
@@ -181,6 +185,9 @@ impl Ppu {
             }
             Mode::HBlank => {
                 if self.dot >= DOTS_PER_LINE {
+                    if self.on_window {
+                        self.fetcher.window_line += 1;
+                    }
                     self.dot = 0;
                     self.ly += 1;
                     self.compare_ly();
@@ -203,6 +210,7 @@ impl Ppu {
                     self.ly += 1;
                     if self.ly >= LINES_PER_FRAME {
                         self.ly = 0;
+                        self.fetcher.window_line = 0;
                         self.mode = Mode::OamScan;
                     }
                     self.compare_ly();
@@ -270,11 +278,23 @@ impl Ppu {
         if self.fetcher.step != FetchStep::Push && !self.fetcher.ready() {
             return;
         }
-        let line = self.ly.wrapping_add(self.scy);
+        // window has its own row count and never scrolls, so it looks nothing up same way
+        let line = if self.on_window {
+            self.fetcher.window_line
+        } else {
+            self.ly.wrapping_add(self.scy)
+        };
         match self.fetcher.step {
             FetchStep::TileNumber => {
-                let tile_x = (self.scx / 8).wrapping_add(self.fetcher.tile_x);
-                self.fetcher.tile_number = self.map_tile(self.bg_map_base(), tile_x, line / 8);
+                let (base, tile_x) = if self.on_window {
+                    (self.window_map_base(), self.fetcher.tile_x)
+                } else {
+                    (
+                        self.bg_map_base(),
+                        (self.scx / 8).wrapping_add(self.fetcher.tile_x),
+                    )
+                };
+                self.fetcher.tile_number = self.map_tile(base, tile_x, line / 8);
                 self.fetcher.next();
             }
             FetchStep::TileDataLow => {
@@ -313,6 +333,29 @@ impl Ppu {
 
     fn vram_at(&self, bank: usize, addr: u16) -> u8 {
         self.vram[bank * VRAM_BANK_SIZE + (addr as usize - 0x8000)]
+    }
+
+    // window takes over once line reaches its corner, and stays for rest of line
+    fn start_window(&mut self) {
+        let reached = self.ly >= self.wy && self.drawn + 7 >= self.wx;
+        // line's own warm up happens first, even when window starts at left edge
+        if self.on_window || self.fetcher.warming_up || self.lcdc & 0x20 == 0 || !reached {
+            return;
+        }
+        self.on_window = true;
+        self.bg_fifo.clear(); // background pixels already queued never show
+        self.discard = 0; // window ignores scrolling
+        self.fetcher.restart();
+        self.fetcher.warming_up = false; // switching costs six dots, not twelve
+    }
+
+    // LCDC bit 6 picks which of two maps holds window tile numbers
+    fn window_map_base(&self) -> u16 {
+        if self.lcdc & 0x40 != 0 {
+            0x9C00
+        } else {
+            0x9800
+        }
     }
 
     // LCDC bit 3 picks which of two maps holds background tile numbers
@@ -575,7 +618,6 @@ mod tests {
         assert_eq!(ppu.mode(), Mode::HBlank);
     }
 
-    // BGP decides which shade each of four colours becomes
     // how many dots drawing took, counted one at a time
     fn drawing_dots(ppu: &mut Ppu) -> u32 {
         ppu.tick(OAM_SCAN_DOTS); // up to start of drawing
@@ -624,6 +666,7 @@ mod tests {
         assert_eq!(OAM_SCAN_DOTS + drawing + blank, DOTS_PER_LINE);
     }
 
+    // BGP decides which shade each of four colours becomes
     #[test]
     fn the_palette_can_swap_the_shades_round() {
         let mut ppu = ppu_with_one_tile();
@@ -894,18 +937,6 @@ mod tests {
                 "        ", "        ", " ####   ", "#       ", " ###    ", "    #   ", "####    ",
                 "        ",
             ],
-            'b' => [
-                "#       ", "#       ", "####    ", "#   #   ", "#   #   ", "#   #   ", "####    ",
-                "        ",
-            ],
-            'o' => [
-                "        ", "        ", " ###    ", "#   #   ", "#   #   ", "#   #   ", " ###    ",
-                "        ",
-            ],
-            'y' => [
-                "        ", "        ", "#   #   ", "#   #   ", "#   #   ", " ####   ", "    #   ",
-                " ###    ",
-            ],
             _ => ["        "; 8],
         }
     }
@@ -953,20 +984,178 @@ mod tests {
         let mut ppu = Ppu::new();
         ppu.write_register(0xFF40, 0x91); // screen on, background on, tiles from 8000
         ppu.write_register(0xFF47, 0xE4); // shades straight through: 0,1,2,3
-        write_word(&mut ppu, "duds boy");
+        write_word(&mut ppu, "duds");
         ppu.tick(DOTS_PER_LINE * LINES_PER_FRAME as u32);
 
         assert_eq!(
             picture(&ppu, 64, 8),
             [
-                "    #               #                   #",
-                "    #               #                   #",
-                " ####   #   #    ####    ####           ####     ###    #   #",
-                "#   #   #   #   #   #   #               #   #   #   #   #   #",
-                "#   #   #   #   #   #    ###            #   #   #   #   #   #",
-                "#   #   #   #   #   #       #           #   #   #   #    ####",
-                " ####    ####    ####   ####            ####     ###        #",
-                "                                                         ###",
+                "    #               #",
+                "    #               #",
+                " ####   #   #    ####    ####",
+                "#   #   #   #   #   #   #",
+                "#   #   #   #   #   #    ###",
+                "#   #   #   #   #   #       #",
+                " ####    ####    ####   ####",
+                "",
+            ]
+            .join("\n")
+        );
+    }
+
+    // a screen whose background is shade 1 everywhere and window is shade 3
+    fn ppu_with_window() -> Ppu {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0xB1); // screen, background and window all on
+        ppu.write_register(0xFF47, 0xE4); // shades straight through: 0,1,2,3
+        for row in 0..8 {
+            ppu.write_vram(0x8010 + row * 2, 0xFF); // tile 1 is shade 1 everywhere
+            ppu.write_vram(0x8020 + row * 2, 0xFF); // tile 2 is shade 3 everywhere
+            ppu.write_vram(0x8021 + row * 2, 0xFF);
+        }
+        for square in 0..32 * 32 {
+            ppu.write_vram(0x9800 + square, 1); // whole map is background tile
+            ppu.write_vram(0x9C00 + square, 2); // other map is window tile
+        }
+        ppu.write_register(0xFF40, 0xF1); // window reads map at 9C00
+        ppu
+    }
+
+    #[test]
+    fn window_covers_background_from_its_corner_onwards() {
+        let mut ppu = ppu_with_window();
+        ppu.write_register(0xFF4A, 0); // window starts on first line
+        ppu.write_register(0xFF4B, 7 + 40); // and 40 pixels in
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(shade_at(&ppu, 39, 0), SHADES[1], "background up to corner");
+        assert_eq!(shade_at(&ppu, 40, 0), SHADES[3], "window from corner on");
+        assert_eq!(shade_at(&ppu, 159, 0), SHADES[3], "window to end of line");
+    }
+
+    #[test]
+    fn window_does_not_show_above_its_top_edge() {
+        let mut ppu = ppu_with_window();
+        ppu.write_register(0xFF4A, 1); // window only from second line down
+        ppu.write_register(0xFF4B, 7);
+        ppu.tick(DOTS_PER_LINE * 2);
+
+        assert_eq!(shade_at(&ppu, 80, 0), SHADES[1], "first line is background");
+        assert_eq!(shade_at(&ppu, 80, 1), SHADES[3], "second line is window");
+    }
+
+    // window keeps its own row count, so lines where it is off do not move it on
+    #[test]
+    fn window_counts_only_the_lines_it_drew() {
+        let mut ppu = ppu_with_window();
+        ppu.write_register(0xFF4A, 0);
+        ppu.write_register(0xFF4B, 7);
+        ppu.tick(DOTS_PER_LINE * 3);
+        assert_eq!(
+            ppu.fetcher.window_line, 3,
+            "three lines drawn, three counted"
+        );
+
+        ppu.write_register(0xFF40, 0xD1); // window off
+        ppu.tick(DOTS_PER_LINE * 2);
+        assert_eq!(
+            ppu.fetcher.window_line, 3,
+            "two lines skipped, none counted"
+        );
+    }
+
+    #[test]
+    fn a_new_picture_starts_window_from_its_first_row() {
+        let mut ppu = ppu_with_window();
+        ppu.write_register(0xFF4A, 0);
+        ppu.write_register(0xFF4B, 7);
+        ppu.tick(DOTS_PER_LINE * LINES_PER_FRAME as u32);
+        assert_eq!(ppu.fetcher.window_line, 0);
+    }
+    // switching to window throws away queue, so fetcher has to fill it again
+    #[test]
+    fn a_window_part_way_along_makes_drawing_longer() {
+        let mut ppu = ppu_with_window();
+        ppu.write_register(0xFF4A, 0);
+        ppu.write_register(0xFF4B, 7 + 80);
+        assert_eq!(drawing_dots(&mut ppu), MIN_DRAWING_DOTS + 6);
+    }
+
+    #[test]
+    fn a_window_over_the_whole_line_still_takes_at_least_the_minimum() {
+        for wx in 0..=7 {
+            let mut ppu = ppu_with_window();
+            ppu.write_register(0xFF4A, 0);
+            ppu.write_register(0xFF4B, wx);
+            assert!(drawing_dots(&mut ppu) >= MIN_DRAWING_DOTS, "wx {wx}");
+        }
+    }
+
+    // WX of 7 puts window's left edge at very first pixel
+    #[test]
+    fn a_window_at_seven_covers_the_line_end_to_end() {
+        let mut ppu = ppu_with_window();
+        ppu.write_register(0xFF4A, 0);
+        ppu.write_register(0xFF4B, 7);
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 0, 0), SHADES[3]);
+        assert_eq!(shade_at(&ppu, 159, 0), SHADES[3]);
+    }
+
+    #[test]
+    fn a_window_pushed_off_the_right_edge_never_shows() {
+        let mut ppu = ppu_with_window();
+        ppu.write_register(0xFF4A, 0);
+        ppu.write_register(0xFF4B, 167);
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 159, 0), SHADES[1], "background to very end");
+        assert_eq!(ppu.fetcher.window_line, 0, "and window counted no line");
+    }
+
+    // a game may switch window on half way down a picture
+    #[test]
+    fn a_window_switched_on_mid_picture_starts_drawing_there() {
+        let mut ppu = ppu_with_window();
+        ppu.write_register(0xFF40, 0xD1); // window off to begin with
+        ppu.write_register(0xFF4A, 0);
+        ppu.write_register(0xFF4B, 7);
+        ppu.tick(DOTS_PER_LINE * 2);
+        assert_eq!(shade_at(&ppu, 80, 1), SHADES[1]);
+
+        ppu.write_register(0xFF40, 0xF1); // window on from third line
+        ppu.tick(DOTS_PER_LINE);
+        assert_eq!(shade_at(&ppu, 80, 2), SHADES[3]);
+    }
+
+    // window sitting over a word, so overlay can be seen rather than measured
+    #[test]
+    fn it_draws_a_window_over_the_background() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0xF1); // screen, background and window on, window map at 9C00
+        ppu.write_register(0xFF47, 0xE4); // shades straight through: 0,1,2,3
+        write_word(&mut ppu, "duds");
+        for row in 0..8 {
+            ppu.write_vram(0x8090 + row * 2, 0xFF); // tile 9 is darkest everywhere
+            ppu.write_vram(0x8091 + row * 2, 0xFF);
+        }
+        for square in 0..32 * 32 {
+            ppu.write_vram(0x9C00 + square, 9);
+        }
+        ppu.write_register(0xFF4A, 4); // window starts half way down word
+        ppu.write_register(0xFF4B, 7 + 32); // and after fourth tile
+        ppu.tick(DOTS_PER_LINE * 8);
+
+        assert_eq!(
+            picture(&ppu, 48, 8),
+            [
+                "    #               #",
+                "    #               #",
+                " ####   #   #    ####    ####",
+                "#   #   #   #   #   #   #",
+                "#   #   #   #   #   #    ###    ################",
+                "#   #   #   #   #   #       #   ################",
+                " ####    ####    ####   ####    ################",
+                "                                ################",
             ]
             .join("\n")
         );
