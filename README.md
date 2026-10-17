@@ -72,5 +72,6 @@ Three choices shape the design:
 | [`architecture.md`](docs/architecture.md) | How the hardware works, and why the emulator is built this way |
 | [`core-modules.md`](docs/core-modules.md) | What each part of the core does |
 | [`cpu-operation.md`](docs/cpu-operation.md) | How the CPU runs, with every instruction |
+| [`screen.md`](docs/screen.md) | How a picture gets drawn, pixel by pixel |
 | [`build.md`](docs/build.md) | How the build fits together |
 | [`roadmap.md`](docs/roadmap.md) | What is done and what comes next |

@@ -17,11 +17,27 @@ const DOTS_PER_LINE: u32 = 456;
 const LINES_PER_FRAME: u8 = 154;
 const OAM_SCAN_DOTS: u32 = 80;
 
-/// TODO(PR-14): drawing really takes 172 to 289 dots; pinned to shortest until FIFO exists.
-const DRAWING_DOTS: u32 = 172;
+// shortest drawing: 160 pixels plus 12 dots of warm up, stalls make it longer
+#[cfg(test)]
+const MIN_DRAWING_DOTS: u32 = 172;
 
 /// pale green-white a real screen shows when nothing has been drawn.
 const BLANK: [u8; 4] = [0xE0, 0xF8, 0xD0, 0xFF];
+
+// four shades a screen can show, lightest first
+const SHADES: [[u8; 4]; 4] = [
+    BLANK,
+    [0x88, 0xC0, 0x70, 0xFF],
+    [0x34, 0x68, 0x56, 0xFF],
+    [0x08, 0x18, 0x20, 0xFF],
+];
+
+// leftmost pixel is bit 7. low byte gives bottom bit of colour, high byte top bit.
+pub(crate) fn pixel_colour(low: u8, high: u8, bit: u8) -> u8 {
+    let low_bit = (low >> bit) & 1;
+    let high_bit = (high >> bit) & 1;
+    high_bit << 1 | low_bit
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -58,6 +74,8 @@ pub struct Ppu {
     ocpd: [u8; 64], // FF6B 8 sprite palettes, 4 colours each
 
     // pixel pipeline, all still empty
+    drawn: u8,           // pixels put on screen so far this line
+    discard: u8,         // leftmost pixels to throw away, for fine scrolling
     fetcher: Fetcher,    // builds background pixels 8 at a time
     bg_fifo: PixelFifo,  // background pixels waiting their turn
     obj_fifo: PixelFifo, // sprite pixels waiting to be mixed in
@@ -91,6 +109,8 @@ impl Ppu {
             bcpd: [0xFF; 64],
             ocps: 0,
             ocpd: [0xFF; 64],
+            drawn: 0,
+            discard: 0,
             fetcher: Fetcher::new(),
             bg_fifo: PixelFifo::new(),
             obj_fifo: PixelFifo::new(),
@@ -147,13 +167,16 @@ impl Ppu {
                     self.mode = Mode::Drawing;
                     self.fetcher.restart();
                     self.bg_fifo.clear();
+                    self.drawn = 0;
+                    self.discard = self.scx % 8; // scrolling within a tile
                     self.obj_fifo.clear();
                 }
             }
             Mode::Drawing => {
-                if self.dot >= OAM_SCAN_DOTS + DRAWING_DOTS {
-                    self.render_line();
-                    self.mode = Mode::HBlank;
+                self.draw_dot();
+                self.fetch_dot();
+                if self.drawn as usize >= SCREEN_WIDTH {
+                    self.mode = Mode::HBlank; // line is done whenever last pixel is out
                 }
             }
             Mode::HBlank => {
@@ -218,15 +241,104 @@ impl Ppu {
     }
 
     // TODO(PR-14..17): draw real pixels here instead of a blank line.
-    fn render_line(&mut self) {
-        if self.ly as usize >= SCREEN_HEIGHT {
+    // take one pixel off queue and put it on screen, once line has started properly
+    fn draw_dot(&mut self) {
+        if self.drawn as usize >= SCREEN_WIDTH {
             return;
         }
-        let start = self.ly as usize * SCREEN_WIDTH * 4;
-        let end = start + SCREEN_WIDTH * 4;
-        for pixel in self.framebuffer[start..end].chunks_exact_mut(4) {
-            pixel.copy_from_slice(&BLANK);
+        let Some(pixel) = self.bg_fifo.pop() else {
+            return; // queue is empty, so fetcher is still catching up
+        };
+        if self.discard > 0 {
+            self.discard -= 1; // scrolled past, so this one never shows
+            return;
         }
+
+        let shade = if self.lcdc & 0x01 == 0 {
+            0 // background switched off leaves screen blank
+        } else {
+            (self.bgp >> (pixel.color * 2)) & 0x03
+        };
+        let at = (self.ly as usize * SCREEN_WIDTH + self.drawn as usize) * 4;
+        self.framebuffer[at..at + 4].copy_from_slice(&SHADES[shade as usize]);
+        self.drawn += 1;
+    }
+
+    // screen reads its own memory directly, never blocked like CPU is
+    // one dot of fetcher. four steps of two dots, then a push retried until there is room.
+    fn fetch_dot(&mut self) {
+        if self.fetcher.step != FetchStep::Push && !self.fetcher.ready() {
+            return;
+        }
+        let line = self.ly.wrapping_add(self.scy);
+        match self.fetcher.step {
+            FetchStep::TileNumber => {
+                let tile_x = (self.scx / 8).wrapping_add(self.fetcher.tile_x);
+                self.fetcher.tile_number = self.map_tile(self.bg_map_base(), tile_x, line / 8);
+                self.fetcher.next();
+            }
+            FetchStep::TileDataLow => {
+                self.fetcher.data_low = self.tile_row(self.fetcher.tile_number, line % 8, 0).0;
+                self.fetcher.next();
+            }
+            FetchStep::TileDataHigh => {
+                self.fetcher.data_high = self.tile_row(self.fetcher.tile_number, line % 8, 0).1;
+                self.fetcher.next();
+                self.push_row(); // try straight away, so a tile takes six dots
+            }
+            FetchStep::Push => self.push_row(),
+        }
+    }
+
+    // hand 8 pixels to queue, leftmost first. a queue with no room keeps fetcher waiting.
+    fn push_row(&mut self) {
+        if self.fetcher.warming_up {
+            self.fetcher.warming_up = false;
+            self.fetcher.step = FetchStep::TileNumber; // first fetch is thrown away
+            return;
+        }
+        if self.bg_fifo.len() > 8 {
+            return;
+        }
+        for bit in (0..8).rev() {
+            self.bg_fifo.push(Pixel {
+                color: pixel_colour(self.fetcher.data_low, self.fetcher.data_high, bit),
+                palette: 0,
+                priority: false,
+            });
+        }
+        self.fetcher.tile_x = self.fetcher.tile_x.wrapping_add(1);
+        self.fetcher.next();
+    }
+
+    fn vram_at(&self, bank: usize, addr: u16) -> u8 {
+        self.vram[bank * VRAM_BANK_SIZE + (addr as usize - 0x8000)]
+    }
+
+    // LCDC bit 3 picks which of two maps holds background tile numbers
+    fn bg_map_base(&self) -> u16 {
+        if self.lcdc & 0x08 != 0 {
+            0x9C00
+        } else {
+            0x9800
+        }
+    }
+
+    // one entry of a 32 by 32 map, wrapping round at edges
+    fn map_tile(&self, base: u16, tile_x: u8, tile_y: u8) -> u8 {
+        let offset = (tile_y as u16 % 32) * 32 + (tile_x as u16 % 32);
+        self.vram_at(0, base + offset)
+    }
+
+    // two bytes holding one row of a tile. LCDC bit 4 picks how tile numbers are counted.
+    fn tile_row(&self, tile: u8, row: u8, bank: usize) -> (u8, u8) {
+        let address = if self.lcdc & 0x10 != 0 {
+            0x8000 + tile as u16 * 16 // counted from 8000 upwards
+        } else {
+            // counted from 9000, and numbers above 127 mean backwards
+            0x9000u16.wrapping_add((tile as i8 as i16 * 16) as u16)
+        } + row as u16 * 2;
+        (self.vram_at(bank, address), self.vram_at(bank, address + 1))
     }
 
     fn vram_index(&self, addr: u16) -> usize {
@@ -397,7 +509,7 @@ mod tests {
         ppu.tick(match mode {
             Mode::OamScan => 0,
             Mode::Drawing => OAM_SCAN_DOTS,
-            Mode::HBlank => OAM_SCAN_DOTS + DRAWING_DOTS,
+            Mode::HBlank => OAM_SCAN_DOTS + MIN_DRAWING_DOTS,
             Mode::VBlank => DOTS_PER_LINE * SCREEN_HEIGHT as u32,
         });
         assert_eq!(ppu.mode(), mode);
@@ -406,6 +518,212 @@ mod tests {
 
     // both HBlank source and LY match are on, so only first rise counts
     // straight from TCAGBD: on last line LY reads 153 for 4 dots, then 0
+    // a map whose top left tile has a known first row, with plain shades
+    fn ppu_with_one_tile() -> Ppu {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x91); // screen on, background on, tiles from 8000
+        ppu.write_register(0xFF47, 0xE4); // shades straight through: 0,1,2,3
+        ppu.write_vram(0x9800, 1); // top left of map is tile 1
+        ppu.write_vram(0x8010, 0b1010_0000); // tile 1, row 0, low byte
+        ppu.write_vram(0x8011, 0b1100_0000); // high byte
+        ppu
+    }
+
+    // colour of one pixel already on screen
+    fn shade_at(ppu: &Ppu, x: usize, y: usize) -> [u8; 4] {
+        let at = (y * SCREEN_WIDTH + x) * 4;
+        ppu.framebuffer[at..at + 4].try_into().unwrap()
+    }
+
+    // twelve dots of warm up: one fetch thrown away, then real one
+    #[test]
+    fn nothing_is_drawn_until_first_tile_arrives() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.tick(OAM_SCAN_DOTS + 12);
+        assert_eq!(ppu.drawn, 0, "still warming up");
+
+        ppu.tick(1);
+        assert_eq!(ppu.drawn, 1, "first pixel goes out on thirteenth dot");
+    }
+
+    #[test]
+    fn a_tile_lands_on_screen_leftmost_pixel_first() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.tick(OAM_SCAN_DOTS + 16);
+        assert_eq!(shade_at(&ppu, 0, 0), SHADES[3], "both bits on");
+        assert_eq!(shade_at(&ppu, 1, 0), SHADES[2], "only high bit");
+        assert_eq!(shade_at(&ppu, 2, 0), SHADES[1], "only low bit");
+        assert_eq!(shade_at(&ppu, 3, 0), SHADES[0], "neither");
+    }
+
+    // fetcher makes eight pixels in eight dots, so it keeps up once started
+    #[test]
+    fn pixels_keep_coming_one_per_dot() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.tick(OAM_SCAN_DOTS + 13);
+        for expected in 2..60 {
+            ppu.tick(1);
+            assert_eq!(ppu.drawn, expected);
+        }
+    }
+
+    #[test]
+    fn a_line_is_160_pixels_wide() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.tick(OAM_SCAN_DOTS + MIN_DRAWING_DOTS);
+        assert_eq!(ppu.drawn as usize, SCREEN_WIDTH);
+        assert_eq!(ppu.mode(), Mode::HBlank);
+    }
+
+    // BGP decides which shade each of four colours becomes
+    // how many dots drawing took, counted one at a time
+    fn drawing_dots(ppu: &mut Ppu) -> u32 {
+        ppu.tick(OAM_SCAN_DOTS); // up to start of drawing
+        assert_eq!(ppu.mode(), Mode::Drawing);
+        let mut dots = 0;
+        while ppu.mode() == Mode::Drawing {
+            ppu.tick(1);
+            dots += 1;
+        }
+        dots
+    }
+
+    // Pan Docs: 160 pixels plus 12 dots of warm up
+    #[test]
+    fn drawing_takes_172_dots_when_nothing_stalls_it() {
+        let mut ppu = ppu_with_one_tile();
+        assert_eq!(drawing_dots(&mut ppu), MIN_DRAWING_DOTS);
+    }
+
+    // every discarded pixel costs a dot, so scrolling lengthens line
+    #[test]
+    fn fine_scrolling_makes_drawing_longer() {
+        for scroll in 0..8u32 {
+            let mut ppu = ppu_with_one_tile();
+            ppu.write_register(0xFF43, scroll as u8);
+            assert_eq!(
+                drawing_dots(&mut ppu),
+                MIN_DRAWING_DOTS + scroll,
+                "scrolled by {scroll}"
+            );
+        }
+    }
+
+    // line is always 456 dots, so a longer drawing leaves a shorter blank
+    #[test]
+    fn a_longer_drawing_eats_into_the_blank() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.write_register(0xFF43, 5);
+        let drawing = drawing_dots(&mut ppu);
+
+        let mut blank = 0;
+        while ppu.mode() == Mode::HBlank {
+            ppu.tick(1);
+            blank += 1;
+        }
+        assert_eq!(OAM_SCAN_DOTS + drawing + blank, DOTS_PER_LINE);
+    }
+
+    #[test]
+    fn the_palette_can_swap_the_shades_round() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.write_register(0xFF47, 0b00_01_10_11); // 0 becomes 3, 3 becomes 0
+        ppu.tick(OAM_SCAN_DOTS + 16);
+        assert_eq!(
+            shade_at(&ppu, 0, 0),
+            SHADES[0],
+            "colour 3 now shows shade 0"
+        );
+        assert_eq!(
+            shade_at(&ppu, 3, 0),
+            SHADES[3],
+            "colour 0 now shows shade 3"
+        );
+    }
+
+    // SCX inside a tile throws away leftmost pixels, so background slides smoothly
+    #[test]
+    fn fine_scrolling_throws_away_the_first_few_pixels() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.write_register(0xFF43, 2); // scrolled two pixels into tile
+        ppu.tick(OAM_SCAN_DOTS + 16);
+        assert_eq!(
+            shade_at(&ppu, 0, 0),
+            SHADES[1],
+            "third pixel of tile is now first"
+        );
+    }
+
+    #[test]
+    fn a_switched_off_background_leaves_the_line_blank() {
+        let mut ppu = ppu_with_one_tile();
+        ppu.write_register(0xFF40, 0x90); // background bit off
+        ppu.tick(OAM_SCAN_DOTS + 16);
+        assert_eq!(shade_at(&ppu, 0, 0), SHADES[0]);
+    }
+
+    #[test]
+    fn a_pixel_takes_one_bit_from_each_byte() {
+        let (low, high) = (0b1010_0000, 0b1100_0000);
+        assert_eq!(pixel_colour(low, high, 7), 3); // both bits on
+        assert_eq!(pixel_colour(low, high, 6), 2); // only high
+        assert_eq!(pixel_colour(low, high, 5), 1); // only low
+        assert_eq!(pixel_colour(low, high, 4), 0); // neither
+    }
+
+    #[test]
+    fn lcdc_bit_3_picks_which_map_is_read() {
+        let mut ppu = Ppu::new();
+        ppu.write_vram(0x9800, 0x11);
+        ppu.write_vram(0x9C00, 0x22);
+
+        ppu.write_register(0xFF40, 0x80); // bit 3 off
+        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0), 0x11);
+
+        ppu.write_register(0xFF40, 0x88); // bit 3 on
+        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0), 0x22);
+    }
+
+    #[test]
+    fn a_map_wraps_round_after_32_tiles() {
+        let mut ppu = Ppu::new();
+        ppu.write_vram(0x9800, 0x42);
+        assert_eq!(
+            ppu.map_tile(0x9800, 32, 32),
+            0x42,
+            "tile 32 is tile 0 again"
+        );
+    }
+
+    // 8000 mode counts tiles upwards from 8000
+    #[test]
+    fn tile_rows_come_from_8000_when_bit_4_is_on() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x90); // bit 4 on
+        ppu.write_vram(0x8010, 0xAB); // tile 1, row 0
+        ppu.write_vram(0x8011, 0xCD);
+        assert_eq!(ppu.tile_row(1, 0, 0), (0xAB, 0xCD));
+
+        ppu.write_vram(0x801E, 0x12); // tile 1, row 7
+        ppu.write_vram(0x801F, 0x34);
+        assert_eq!(ppu.tile_row(1, 7, 0), (0x12, 0x34));
+    }
+
+    // 8800 mode counts from 9000, and tile numbers above 127 count backwards
+    #[test]
+    fn tile_rows_count_backwards_when_bit_4_is_off() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x80); // bit 4 off
+        ppu.write_vram(0x9000, 0x0A);
+        assert_eq!(ppu.tile_row(0, 0, 0).0, 0x0A, "tile 0 sits at 9000");
+
+        ppu.write_vram(0x8800, 0x0B);
+        assert_eq!(ppu.tile_row(128, 0, 0).0, 0x0B, "tile 128 is 128 back");
+
+        ppu.write_vram(0x8FF0, 0x0C);
+        assert_eq!(ppu.tile_row(255, 0, 0).0, 0x0C, "tile 255 is one back");
+    }
+
     #[test]
     fn ly_shows_153_for_only_four_dots() {
         let mut ppu = Ppu::new();
@@ -440,7 +758,7 @@ mod tests {
         ppu.write_register(0xFF41, 0x48); // HBlank and LY match sources on
         ppu.write_register(0xFF45, 0x00); // match on line 0, which we are on
 
-        let irq = ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS); // into blank at end of line 0
+        let irq = ppu.tick(OAM_SCAN_DOTS + MIN_DRAWING_DOTS); // into blank at end of line 0
         assert_eq!(irq & IF_STAT, 0, "line was already up from LY match");
     }
 
@@ -450,13 +768,14 @@ mod tests {
         ppu.write_register(0xFF41, 0x08); // HBlank only
         ppu.write_register(0xFF45, 0xFF); // never matches
 
-        let first = ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS);
+        let first = ppu.tick(OAM_SCAN_DOTS + MIN_DRAWING_DOTS);
         assert_eq!(first & IF_STAT, IF_STAT, "first blank asks for one");
 
-        let same_blank = ppu.tick(DOTS_PER_LINE - OAM_SCAN_DOTS - DRAWING_DOTS);
+        let same_blank = ppu.tick(DOTS_PER_LINE - OAM_SCAN_DOTS - MIN_DRAWING_DOTS);
         assert_eq!(same_blank & IF_STAT, 0, "still inside same blank");
 
-        let next = ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS); // drawing drops it, next blank raises it
+        // drawing drops line, so next blank raises it again
+        let next = ppu.tick(OAM_SCAN_DOTS + MIN_DRAWING_DOTS);
         assert_eq!(next & IF_STAT, IF_STAT);
     }
 
@@ -464,7 +783,7 @@ mod tests {
     #[test]
     fn switching_a_source_on_can_ask_for_an_interrupt() {
         let mut ppu = Ppu::new();
-        ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS); // sit in blank at end of line
+        ppu.tick(OAM_SCAN_DOTS + MIN_DRAWING_DOTS); // sit in blank at end of line
         assert_eq!(ppu.write_register(0xFF41, 0x08), IF_STAT);
         assert_eq!(ppu.write_register(0xFF41, 0x08), 0, "no second rise");
     }
@@ -482,7 +801,7 @@ mod tests {
     fn a_screen_that_is_off_asks_for_nothing() {
         let mut ppu = Ppu::new();
         ppu.write_register(0xFF41, 0x48);
-        ppu.tick(OAM_SCAN_DOTS + DRAWING_DOTS);
+        ppu.tick(OAM_SCAN_DOTS + MIN_DRAWING_DOTS);
         ppu.write_register(0xFF40, 0x00);
         assert_eq!(ppu.tick(DOTS_PER_LINE * 4), 0);
     }
@@ -511,7 +830,7 @@ mod tests {
         let mut ppu = in_mode(Mode::Drawing);
         ppu.write_vram(0x8000, 0x42);
         ppu.write_oam(0xFE00, 0x42);
-        ppu.tick(DRAWING_DOTS); // on to blank at end of line
+        ppu.tick(MIN_DRAWING_DOTS); // on to blank at end of line
         assert_eq!(ppu.read_vram(0x8000), 0x00);
         assert_eq!(ppu.read_oam(0xFE00), 0x00);
     }
@@ -546,7 +865,7 @@ mod tests {
             "the index moved anyway"
         );
 
-        ppu.tick(DRAWING_DOTS);
+        ppu.tick(MIN_DRAWING_DOTS);
         ppu.write_register(0xFF68, 0x00);
         assert_eq!(ppu.read_register(0xFF69), 0xFF, "slot 0 kept its old value");
     }
@@ -559,5 +878,97 @@ mod tests {
         ppu.write_oam(0xFE00, 0x42);
         assert_eq!(ppu.read_vram(0x8000), 0x42);
         assert_eq!(ppu.read_oam(0xFE00), 0x42);
+    }
+    // a letter as an 8 by 8 tile, where "#" is darkest shade
+    fn glyph(letter: char) -> [&'static str; 8] {
+        match letter {
+            'd' => [
+                "    #   ", "    #   ", " ####   ", "#   #   ", "#   #   ", "#   #   ", " ####   ",
+                "        ",
+            ],
+            'u' => [
+                "        ", "        ", "#   #   ", "#   #   ", "#   #   ", "#   #   ", " ####   ",
+                "        ",
+            ],
+            's' => [
+                "        ", "        ", " ####   ", "#       ", " ###    ", "    #   ", "####    ",
+                "        ",
+            ],
+            'b' => [
+                "#       ", "#       ", "####    ", "#   #   ", "#   #   ", "#   #   ", "####    ",
+                "        ",
+            ],
+            'o' => [
+                "        ", "        ", " ###    ", "#   #   ", "#   #   ", "#   #   ", " ###    ",
+                "        ",
+            ],
+            'y' => [
+                "        ", "        ", "#   #   ", "#   #   ", "#   #   ", " ####   ", "    #   ",
+                " ###    ",
+            ],
+            _ => ["        "; 8],
+        }
+    }
+
+    // put a word into video memory as tiles, then point map at them
+    fn write_word(ppu: &mut Ppu, word: &str) {
+        for (slot, letter) in word.chars().enumerate() {
+            let tile = slot as u16 + 1;
+            for (row, line) in glyph(letter).iter().enumerate() {
+                let bits = line
+                    .bytes()
+                    .enumerate()
+                    .fold(0u8, |b, (i, c)| if c == b'#' { b | 0x80 >> i } else { b });
+                let at = 0x8000 + tile * 16 + row as u16 * 2;
+                ppu.write_vram(at, bits); // both bytes set means darkest shade
+                ppu.write_vram(at + 1, bits);
+            }
+            ppu.write_vram(0x9800 + slot as u16, tile as u8);
+        }
+    }
+
+    // turn top left corner of picture back into text, so a human can read it
+    fn picture(ppu: &Ppu, width: usize, height: usize) -> String {
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        if shade_at(ppu, x, y)[0] < 128 {
+                            '#'
+                        } else {
+                            ' '
+                        }
+                    })
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // whole path at once: tiles, map, fetcher, queue, palette, picture
+    #[test]
+    fn it_draws_a_word_on_screen() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0xFF40, 0x91); // screen on, background on, tiles from 8000
+        ppu.write_register(0xFF47, 0xE4); // shades straight through: 0,1,2,3
+        write_word(&mut ppu, "duds boy");
+        ppu.tick(DOTS_PER_LINE * LINES_PER_FRAME as u32);
+
+        assert_eq!(
+            picture(&ppu, 64, 8),
+            [
+                "    #               #                   #",
+                "    #               #                   #",
+                " ####   #   #    ####    ####           ####     ###    #   #",
+                "#   #   #   #   #   #   #               #   #   #   #   #   #",
+                "#   #   #   #   #   #    ###            #   #   #   #   #   #",
+                "#   #   #   #   #   #       #           #   #   #   #    ####",
+                " ####    ####    ####   ####            ####     ###        #",
+                "                                                         ###",
+            ]
+            .join("\n")
+        );
     }
 }
