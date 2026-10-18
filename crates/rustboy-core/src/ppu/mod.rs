@@ -330,10 +330,11 @@ impl Ppu {
             pixel.color
         };
         // a sprite's colour 0 is see through, and one marked low can also hide behind
+        let tile_wins = self.cgb && pixel.priority && behind != 0;
         let over = self
             .obj_fifo
             .pop()
-            .filter(|s| s.color != 0 && !(s.priority && behind != 0));
+            .filter(|s| s.color != 0 && !tile_wins && !(s.priority && behind != 0));
 
         let colour = match over {
             Some(sprite) if self.cgb => colour_at(&self.ocpd, sprite.palette, sprite.color),
@@ -376,15 +377,16 @@ impl Ppu {
                         (self.scx / 8).wrapping_add(self.fetcher.tile_x),
                     )
                 };
-                self.fetcher.tile_number = self.map_tile(base, tile_x, line / 8);
+                (self.fetcher.tile_number, self.fetcher.attributes) =
+                    self.map_tile(base, tile_x, line / 8);
                 self.fetcher.next();
             }
             FetchStep::TileDataLow => {
-                self.fetcher.data_low = self.tile_row(self.fetcher.tile_number, line % 8, 0).0;
+                self.fetcher.data_low = self.bg_tile_row(line).0;
                 self.fetcher.next();
             }
             FetchStep::TileDataHigh => {
-                self.fetcher.data_high = self.tile_row(self.fetcher.tile_number, line % 8, 0).1;
+                self.fetcher.data_high = self.bg_tile_row(line).1;
                 self.fetcher.next();
                 self.push_row(); // try straight away, so a tile takes six dots
             }
@@ -402,11 +404,14 @@ impl Ppu {
         if self.bg_fifo.len() > 8 {
             return;
         }
-        for bit in (0..8).rev() {
+        let attributes = self.fetcher.attributes;
+        let flipped = attributes & 0x20 != 0; // mirrored left to right
+        for step in 0..8 {
+            let bit = if flipped { step } else { 7 - step };
             self.bg_fifo.push(Pixel {
                 color: pixel_colour(self.fetcher.data_low, self.fetcher.data_high, bit),
-                palette: 0,
-                priority: false,
+                palette: attributes & 0x07,
+                priority: attributes & 0x80 != 0,
             });
         }
         self.fetcher.tile_x = self.fetcher.tile_x.wrapping_add(1);
@@ -450,9 +455,30 @@ impl Ppu {
     }
 
     // one entry of a 32 by 32 map, wrapping round at edges
-    fn map_tile(&self, base: u16, tile_x: u8, tile_y: u8) -> u8 {
+    fn map_tile(&self, base: u16, tile_x: u8, tile_y: u8) -> (u8, u8) {
         let offset = (tile_y as u16 % 32) * 32 + (tile_x as u16 % 32);
-        self.vram_at(0, base + offset)
+        // on a colour console same square in other bank says how to draw it
+        let attributes = if self.cgb {
+            self.vram_at(1, base + offset)
+        } else {
+            0
+        };
+        (self.vram_at(0, base + offset), attributes)
+    }
+
+    // attribute byte can turn tile upside down and take it from other bank
+    fn bg_tile_row(&self, line: u8) -> (u8, u8) {
+        let attributes = self.fetcher.attributes;
+        let row = if attributes & 0x40 != 0 {
+            7 - line % 8
+        } else {
+            line % 8
+        };
+        self.tile_row(
+            self.fetcher.tile_number,
+            row,
+            (attributes >> 3 & 1) as usize,
+        )
     }
 
     // two bytes holding one row of a tile. LCDC bit 4 picks how tile numbers are counted.
@@ -803,10 +829,10 @@ mod tests {
         ppu.write_vram(0x9C00, 0x22);
 
         ppu.write_register(0xFF40, 0x80); // bit 3 off
-        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0), 0x11);
+        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0).0, 0x11);
 
         ppu.write_register(0xFF40, 0x88); // bit 3 on
-        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0), 0x22);
+        assert_eq!(ppu.map_tile(ppu.bg_map_base(), 0, 0).0, 0x22);
     }
 
     #[test]
@@ -814,7 +840,7 @@ mod tests {
         let mut ppu = Ppu::new();
         ppu.write_vram(0x9800, 0x42);
         assert_eq!(
-            ppu.map_tile(0x9800, 32, 32),
+            ppu.map_tile(0x9800, 32, 32).0,
             0x42,
             "tile 32 is tile 0 again"
         );
@@ -1553,5 +1579,112 @@ mod tests {
         put_colour(&mut ppu, 0xFF68, 0xFF69, 1, 0x001F);
         ppu.tick(DOTS_PER_LINE);
         assert_eq!(shade_at(&ppu, 40, 0), SHADES[1], "palette table is ignored");
+    }
+
+    const RED: u16 = 0x001F;
+    const BLUE: u16 = 0x7C00;
+
+    // attribute byte sits at same map address, over in other bank
+    fn put_attributes(ppu: &mut Ppu, value: u8) {
+        ppu.write_register(0xFF4F, 1);
+        for square in 0..32 * 32 {
+            ppu.write_vram(0x9800 + square, value);
+        }
+        ppu.write_register(0xFF4F, 0);
+    }
+
+    fn put_map(ppu: &mut Ppu, tile: u8) {
+        for square in 0..32 * 32 {
+            ppu.write_vram(0x9800 + square, tile);
+        }
+    }
+
+    #[test]
+    fn each_tile_picks_its_own_palette() {
+        let mut ppu = colour_ppu();
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 1, RED); // palette 0 colour 1
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 2 * 4 + 1, BLUE); // palette 2 colour 1
+        put_attributes(&mut ppu, 2); // every tile asks for palette 2
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(shade_at(&ppu, 40, 0), [0x00, 0x00, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn a_tile_can_be_mirrored_left_to_right() {
+        let mut ppu = colour_ppu();
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 0, RED); // colour 0
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 3, BLUE); // colour 3
+        put_map(&mut ppu, 3); // tile 3 is clear on left, solid on right
+        put_attributes(&mut ppu, 0x20);
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(shade_at(&ppu, 0, 0), [0x00, 0x00, 0xFF, 0xFF], "solid half");
+        assert_eq!(shade_at(&ppu, 7, 0), [0xFF, 0x00, 0x00, 0xFF], "clear half");
+    }
+
+    #[test]
+    fn a_tile_can_be_turned_upside_down() {
+        let mut ppu = colour_ppu();
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 0, RED);
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 3, BLUE);
+        ppu.write_vram(0x8040, 0xFF); // tile 4 is solid on its top row only
+        ppu.write_vram(0x8041, 0xFF);
+        put_map(&mut ppu, 4);
+        put_attributes(&mut ppu, 0x40);
+        ppu.tick(DOTS_PER_LINE * 8);
+
+        assert_eq!(
+            shade_at(&ppu, 0, 0),
+            [0xFF, 0x00, 0x00, 0xFF],
+            "top row is now last"
+        );
+        assert_eq!(
+            shade_at(&ppu, 0, 7),
+            [0x00, 0x00, 0xFF, 0xFF],
+            "last row is now top"
+        );
+    }
+
+    #[test]
+    fn a_tile_picture_can_come_from_the_other_bank() {
+        let mut ppu = colour_ppu();
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 0, RED);
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 3, BLUE);
+        ppu.write_register(0xFF4F, 1);
+        for row in 0..8 {
+            ppu.write_vram(0x8010 + row * 2, 0xFF); // other bank's tile 1 is solid
+            ppu.write_vram(0x8011 + row * 2, 0xFF);
+        }
+        ppu.write_register(0xFF4F, 0);
+        put_attributes(&mut ppu, 0x08);
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(shade_at(&ppu, 40, 0), [0x00, 0x00, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn a_tile_marked_high_keeps_sprites_behind_it() {
+        let mut ppu = colour_ppu();
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 1, RED); // background colour 1
+        put_colour(&mut ppu, 0xFF6A, 0xFF6B, 3, BLUE); // sprite colour 3
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0)); // sprite asks to be in front
+        put_attributes(&mut ppu, 0x80);
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(
+            shade_at(&ppu, 40, 0),
+            [0xFF, 0x00, 0x00, 0xFF],
+            "tile wins anyway"
+        );
+    }
+
+    #[test]
+    fn an_old_console_has_no_attributes_to_read() {
+        let mut ppu = ppu_with_sprites(); // not a colour console
+        put_attributes(&mut ppu, 0xFF); // every bit set, and none of it counts
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(shade_at(&ppu, 40, 0), SHADES[1], "still plain shade 1");
     }
 }

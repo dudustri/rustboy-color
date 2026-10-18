@@ -14,6 +14,7 @@ pub struct Fetcher {
     pub step: FetchStep,  // which of five steps we are on
     pub tile_x: u8,       // how many tiles along line we have fetched
     pub tile_number: u8,  // which picture map told us to draw
+    pub attributes: u8,   // colour console only: palette, bank, flips, priority
     pub data_low: u8,     // first half of 8 pixels
     pub data_high: u8,    // second half; two together give each pixel its colour
     pub window_line: u8,  // window counts its own lines, apart from one being drawn
