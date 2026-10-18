@@ -114,6 +114,7 @@ pub struct Ppu {
     obj_fifo: PixelFifo, // sprite pixels waiting to be mixed in
     scan: SpriteScan,    // sprites picked for this line
     stat_line: bool,     // shared interrupt line; only its rise asks for an interrupt
+    rest_started: bool,  // a line just ended, which is a bulk copy's cue to move
     pub cgb: bool,       // colour console, so palettes hold real colours not greys
 }
 
@@ -152,6 +153,7 @@ impl Ppu {
             obj_fifo: PixelFifo::new(),
             scan: SpriteScan::new(),
             stat_line: false,
+            rest_started: false,
             cgb: false,
         }
     }
@@ -253,6 +255,7 @@ impl Ppu {
                 }
                 if self.drawn as usize >= SCREEN_WIDTH {
                     self.mode = Mode::HBlank; // line is done whenever last pixel is out
+                    self.rest_started = true;
                 }
             }
             Mode::HBlank => {
@@ -584,6 +587,17 @@ impl Ppu {
         if !self.oam_busy() {
             self.oam[(addr - 0xFE00) as usize] = value;
         }
+    }
+
+    /// true once per line, when screen reaches its rest. Reading it clears it.
+    pub fn take_rest_start(&mut self) -> bool {
+        std::mem::take(&mut self.rest_started)
+    }
+
+    /// a bulk copy writes straight in, ignoring lock a drawing screen puts on.
+    pub fn force_vram(&mut self, addr: u16, value: u8) {
+        let at = self.vram_index(addr);
+        self.vram[at] = value;
     }
 
     /// a bulk copy writes straight in, ignoring lock a drawing screen puts on.
