@@ -16,6 +16,7 @@ pub const IF_JOYPAD: u8 = 1 << 4;
 const WRAM_BANK_SIZE: usize = 0x1000;
 const WRAM_BANKS: usize = 8;
 const HRAM_SIZE: usize = 0x7F;
+const OAM_BYTES: u8 = 160; // 40 sprites, four bytes each
 
 pub struct Bus {
     pub cartridge: Option<Cartridge>, // game, or None when nothing is plugged in
@@ -33,7 +34,17 @@ pub struct Bus {
     pub interrupt_flag: u8, // FF0F which interrupts are waiting to be handled
     pub interrupt_enable: u8, // FFFF which interrupts game allows
     svbk: u8,               // FF70 which work RAM bank sits at D000-DFFF
-    key1: u8,               // FF4D ask for double speed, and report whether it is on
+    dma: u8,                // FF46 last block asked for, kept only so reads give it back
+    dma_from: u16,          // where next byte of that block comes from
+    dma_left: u8,           // bytes still to copy, zero when nothing is going on
+    dma_wait: u32,          // ticks before next byte moves
+
+    // FF51-FF55 colour console only: copy into video memory, all at once or a line at a time
+    hdma_from: u16,     // where next byte comes from
+    hdma_to: u16,       // where it goes, always inside video memory
+    hdma_left: u16,     // bytes still to copy, zero when nothing is waiting
+    hdma_by_line: bool, // copy 16 bytes each time screen rests, instead of all now
+    key1: u8,           // FF4D ask for double speed, and report whether it is on
 }
 
 impl Bus {
@@ -57,6 +68,14 @@ impl Bus {
             hram: [0; HRAM_SIZE],
             svbk: 1,
             key1: 0,
+            dma: 0xFF,
+            dma_from: 0,
+            dma_left: 0,
+            dma_wait: 0,
+            hdma_from: 0,
+            hdma_to: 0x8000,
+            hdma_left: 0,
+            hdma_by_line: false,
             t_cycles: 0,
         }
     }
@@ -81,7 +100,9 @@ impl Bus {
         } else {
             t_cycles
         };
+        self.step_dma(base);
         self.interrupt_flag |= self.ppu.tick(base);
+        self.step_hdma();
         self.apu.tick(base);
 
         self.interrupt_flag |= self.timer.tick(t_cycles);
@@ -109,7 +130,55 @@ impl Bus {
         bank * WRAM_BANK_SIZE
     }
 
+    /// 160 bytes into sprite table, one every machine cycle.
+    fn step_dma(&mut self, t_cycles: u32) {
+        let mut ticks = t_cycles;
+        while self.dma_left > 0 && ticks > 0 {
+            let step = ticks.min(self.dma_wait);
+            self.dma_wait -= step;
+            ticks -= step;
+            if self.dma_wait == 0 {
+                let byte = self.read_anywhere(self.dma_from);
+                self.ppu.force_oam(OAM_BYTES - self.dma_left, byte);
+                self.dma_from += 1;
+                self.dma_left -= 1;
+                self.dma_wait = 4;
+            }
+        }
+    }
+
+    /// 16 bytes into video memory each time screen finishes a line.
+    fn step_hdma(&mut self) {
+        if self.ppu.take_rest_start() && self.hdma_by_line && self.hdma_left > 0 {
+            self.copy_to_vram(16);
+        }
+    }
+
+    // shortcut: a copy lands instantly instead of stopping CPU for its real length,
+    // upgrade when a game turns out to measure how long one took.
+    fn copy_to_vram(&mut self, bytes: u16) {
+        for _ in 0..bytes.min(self.hdma_left) {
+            let byte = self.read_anywhere(self.hdma_from);
+            self.ppu.force_vram(self.hdma_to, byte);
+            self.hdma_from = self.hdma_from.wrapping_add(1);
+            self.hdma_to = 0x8000 | (self.hdma_to.wrapping_add(1) & 0x1FFF);
+            self.hdma_left -= 1;
+        }
+        if self.hdma_left == 0 {
+            self.hdma_by_line = false;
+        }
+    }
+
     pub fn read(&mut self, addr: u16) -> u8 {
+        // a copy owns bus while it runs, so only high RAM answers CPU
+        if self.dma_left > 0 && !(0xFF80..=0xFFFE).contains(&addr) {
+            return 0xFF;
+        }
+        self.read_anywhere(addr)
+    }
+
+    // copy itself is what holds bus, so it reads without asking
+    fn read_anywhere(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x7FFF => self.cartridge.as_ref().map_or(0xFF, |c| c.read_rom(addr)),
             0x8000..=0x9FFF => self.ppu.read_vram(addr),
@@ -159,10 +228,20 @@ impl Bus {
             0xFF04..=0xFF07 => self.timer.read(addr),
             0xFF0F => self.interrupt_flag | 0xE0,
             0xFF10..=0xFF3F => self.apu.read(addr),
+            0xFF46 => self.dma,
             0xFF40..=0xFF4B => self.ppu.read_register(addr),
             0xFF4D => 0x7E | self.key1 | if self.double_speed { 0x80 } else { 0x00 },
             0xFF4F => self.ppu.read_register(addr),
-            0xFF51..=0xFF55 => 0xFF, // TODO(PR-18): HDMA
+            // only FF55 answers: top bit off while a line by line copy is still going
+            0xFF55 if self.hdma_left > 0 => {
+                let blocks = (self.hdma_left / 16) as u8 - 1;
+                if self.hdma_by_line {
+                    blocks
+                } else {
+                    0x80 | blocks
+                }
+            }
+            0xFF51..=0xFF55 => 0xFF,
             0xFF68..=0xFF6B => self.ppu.read_register(addr),
             0xFF70 => self.svbk | 0xF8,
             _ => 0xFF,
@@ -176,11 +255,34 @@ impl Bus {
             0xFF04..=0xFF07 => self.timer.write(addr, value),
             0xFF0F => self.interrupt_flag = value & 0x1F,
             0xFF10..=0xFF3F => self.apu.write(addr, value),
-            0xFF46 => {} // TODO(PR-18): OAM DMA
+            0xFF46 => {
+                self.dma = value;
+                self.dma_from = (value as u16) << 8;
+                self.dma_left = OAM_BYTES;
+                self.dma_wait = 4;
+            }
             0xFF40..=0xFF4B => self.interrupt_flag |= self.ppu.write_register(addr, value),
             0xFF4D => self.key1 = value & 0x01,
             0xFF4F => self.interrupt_flag |= self.ppu.write_register(addr, value),
-            0xFF51..=0xFF55 => {} // TODO(PR-18): HDMA
+            0xFF51 => self.hdma_from = (self.hdma_from & 0x00FF) | (value as u16) << 8,
+            0xFF52 => self.hdma_from = (self.hdma_from & 0xFF00) | (value & 0xF0) as u16,
+            0xFF53 => {
+                self.hdma_to = 0x8000 | (self.hdma_to & 0x0FF0) | ((value as u16 & 0x1F) << 8)
+            }
+            0xFF54 => self.hdma_to = (self.hdma_to & 0xFF00) | (value & 0xF0) as u16,
+            0xFF55 if self.ppu.cgb => {
+                let bytes = ((value & 0x7F) as u16 + 1) * 16;
+                if value & 0x80 != 0 {
+                    self.hdma_by_line = true; // a chunk each time screen rests
+                    self.hdma_left = bytes;
+                } else if self.hdma_by_line {
+                    self.hdma_by_line = false; // writing a zero here calls one off
+                } else {
+                    self.hdma_left = bytes;
+                    self.copy_to_vram(bytes);
+                }
+            }
+            0xFF55 => {}
             0xFF68..=0xFF6B => self.interrupt_flag |= self.ppu.write_register(addr, value),
             0xFF70 => self.svbk = value & 0x07,
             _ => {}
@@ -213,5 +315,133 @@ mod tests {
         bus.write(0xFFFF, 0x22);
         assert_eq!(bus.read(0xFFFE), 0x11);
         assert_eq!(bus.read(0xFFFF), 0x22);
+    }
+
+    // fill a page of work RAM, then ask for it to be copied into sprite table
+    fn start_dma(bus: &mut Bus) {
+        bus.write(0xFF40, 0x00); // screen off, so sprite table is readable in test
+        for i in 0..OAM_BYTES as u16 {
+            bus.write(0xC100 + i, 0x40 + i as u8); // never zero, so untouched bytes stand out
+        }
+        bus.write(0xFF46, 0xC1);
+    }
+
+    #[test]
+    fn a_copy_moves_one_byte_every_machine_cycle() {
+        let mut bus = Bus::testing();
+        start_dma(&mut bus);
+
+        bus.tick(4);
+        assert_eq!(bus.ppu.read_oam(0xFE00), 0x40, "first byte landed");
+        assert_eq!(bus.ppu.read_oam(0xFE01), 0, "second has not yet");
+
+        bus.tick(4);
+        assert_eq!(bus.ppu.read_oam(0xFE01), 0x41);
+    }
+
+    #[test]
+    fn a_copy_ends_after_160_bytes() {
+        let mut bus = Bus::testing();
+        start_dma(&mut bus);
+        bus.tick(4 * OAM_BYTES as u32);
+
+        assert_eq!(bus.ppu.read_oam(0xFE9F), 0x40 + 159, "last byte landed");
+        assert_eq!(bus.read(0xC100), 0x40, "bus is free again");
+    }
+
+    #[test]
+    fn only_high_ram_answers_while_a_copy_runs() {
+        let mut bus = Bus::testing();
+        bus.write(0xFF80, 0x42);
+        start_dma(&mut bus);
+        bus.tick(4);
+
+        assert_eq!(bus.read(0xC100), 0xFF, "work RAM is shut out");
+        assert_eq!(bus.read(0xFF80), 0x42, "high RAM still answers");
+    }
+
+    #[test]
+    fn the_block_asked_for_reads_back() {
+        let mut bus = Bus::testing();
+        bus.write(0xFF46, 0xC1);
+        bus.tick(4 * OAM_BYTES as u32);
+        assert_eq!(bus.read(0xFF46), 0xC1);
+    }
+
+    // a colour console, with a page of work RAM ready to copy
+    fn colour_bus() -> Bus {
+        let mut bus = Bus::testing();
+        bus.ppu.cgb = true;
+        for i in 0..64u16 {
+            bus.write(0xC100 + i, 0x40 + i as u8);
+        }
+        bus.write(0xFF51, 0xC1); // from C100
+        bus.write(0xFF52, 0x00);
+        bus.write(0xFF53, 0x18); // to 9800
+        bus.write(0xFF54, 0x00);
+        bus
+    }
+
+    #[test]
+    fn a_copy_asked_for_all_at_once_lands_straight_away() {
+        let mut bus = colour_bus();
+        bus.write(0xFF55, 0x03); // four lots of 16 bytes, all now
+
+        assert_eq!(bus.ppu.read_vram(0x9800), 0x40);
+        assert_eq!(bus.ppu.read_vram(0x983F), 0x40 + 63);
+        assert_eq!(bus.read(0xFF55), 0xFF, "nothing left waiting");
+    }
+
+    #[test]
+    fn a_copy_asked_for_by_line_waits_for_the_screen_to_rest() {
+        let mut bus = colour_bus();
+        bus.write(0xFF55, 0x83); // four lots of 16 bytes, one lot per rest
+
+        assert_eq!(bus.ppu.read_vram(0x9800), 0, "nothing moves yet");
+        bus.tick(4 * 456); // one whole line, so one rest goes by
+        assert_eq!(bus.ppu.read_vram(0x9800), 0x40, "first lot landed");
+        assert_eq!(bus.ppu.read_vram(0x9810), 0, "second lot has not");
+
+        bus.tick(4 * 456);
+        assert_eq!(bus.ppu.read_vram(0x9810), 0x50, "second lot landed");
+    }
+
+    #[test]
+    fn a_copy_by_line_reports_how_much_is_left() {
+        let mut bus = colour_bus();
+        bus.write(0xFF55, 0x83);
+        assert_eq!(bus.read(0xFF55), 0x03, "top bit off means still going");
+
+        bus.tick(4 * 456);
+        assert_eq!(bus.read(0xFF55), 0x02, "one lot fewer");
+    }
+
+    #[test]
+    fn writing_a_zero_calls_off_a_copy_by_line() {
+        let mut bus = colour_bus();
+        bus.write(0xFF55, 0x83);
+        bus.write(0xFF55, 0x00); // call it off
+
+        bus.tick(4 * 456);
+        assert_eq!(bus.ppu.read_vram(0x9800), 0, "nothing more moved");
+        assert_eq!(
+            bus.read(0xFF55),
+            0x83,
+            "top bit back on, rest still counted"
+        );
+    }
+
+    #[test]
+    fn an_old_console_has_no_such_copy() {
+        let mut bus = Bus::testing();
+        bus.ppu.cgb = false; // an old console, whatever this test cartridge claims
+        for i in 0..16u16 {
+            bus.write(0xC100 + i, 0x40 + i as u8);
+        }
+        bus.write(0xFF51, 0xC1);
+        bus.write(0xFF53, 0x18);
+        bus.write(0xFF55, 0x00);
+
+        assert_eq!(bus.ppu.read_vram(0x9800), 0);
     }
 }
