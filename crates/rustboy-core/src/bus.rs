@@ -105,6 +105,9 @@ impl Bus {
         self.step_hdma();
         self.apu.tick(base);
 
+        if let Some(cartridge) = self.cartridge.as_mut() {
+            cartridge.tick(t_cycles);
+        }
         self.interrupt_flag |= self.timer.tick(t_cycles);
         self.interrupt_flag |= self.serial.tick(t_cycles);
         self.interrupt_flag |= self.joypad.take_interrupt();

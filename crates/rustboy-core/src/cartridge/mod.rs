@@ -103,7 +103,15 @@ impl Cartridge {
         self.mbc.write_control(addr, value);
     }
 
+    /// keeps a cartridge clock running, for chips that have one.
+    pub fn tick(&mut self, t_cycles: u32) {
+        self.mbc.tick(t_cycles);
+    }
+
     pub fn read_ram(&self, addr: u16) -> u8 {
+        if let Some(register) = self.mbc.clock_register() {
+            return self.mbc.read_clock(register);
+        }
         match self.mbc.ram_offset(addr, self.ram.len()) {
             Some(offset) => self.ram.get(offset).copied().unwrap_or(0xFF),
             None => 0xFF,
@@ -111,6 +119,9 @@ impl Cartridge {
     }
 
     pub fn write_ram(&mut self, addr: u16, value: u8) {
+        if let Some(register) = self.mbc.clock_register() {
+            return self.mbc.write_clock(register, value);
+        }
         if let Some(offset) = self.mbc.ram_offset(addr, self.ram.len())
             && offset < self.ram.len()
         {
@@ -132,6 +143,7 @@ impl Cartridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::T_CYCLES_PER_SECOND;
 
     // a console refuses a header that does not add up, so every fixture signs itself
     fn sign(rom: &mut [u8]) {
@@ -282,13 +294,128 @@ mod tests {
         }
     }
 
-    // banks 8 to 12 are the clock, which arrives later, so no save RAM answers there
+    // an MBC3 with a clock, switched on and ready to be asked the time
+    fn clock_cart() -> Cartridge {
+        let mut cart = cart(0x10, 4, 0x03); // MBC3 with clock, RAM and a battery
+        cart.write_rom(0x0000, 0x0A); // one switch turns on both save RAM and clock
+        cart
+    }
+
+    fn wind(cart: &mut Cartridge, seconds: u32) {
+        for _ in 0..seconds {
+            cart.tick(T_CYCLES_PER_SECOND);
+        }
+    }
+
+    // a running clock could change mid read, so a game takes a frozen copy first
+    fn latch(cart: &mut Cartridge) {
+        cart.write_rom(0x6000, 0);
+        cart.write_rom(0x6000, 1);
+    }
+
+    fn clock(cart: &mut Cartridge, register: u8) -> u8 {
+        cart.write_rom(0x4000, register);
+        cart.read_ram(0xA000)
+    }
+
     #[test]
-    fn mbc3_gives_nothing_back_where_the_clock_will_be() {
-        let mut cart = cart(0x13, 4, 0x03);
-        cart.write_rom(0x0000, 0x0A);
+    fn the_clock_counts_seconds_minutes_and_hours() {
+        let mut cart = clock_cart();
+        wind(&mut cart, 3661); // one hour, one minute and one second
+        latch(&mut cart);
+
+        assert_eq!(clock(&mut cart, 0x08), 1, "seconds");
+        assert_eq!(clock(&mut cart, 0x09), 1, "minutes");
+        assert_eq!(clock(&mut cart, 0x0A), 1, "hours");
+    }
+
+    #[test]
+    fn nothing_new_shows_until_the_game_takes_a_copy() {
+        let mut cart = clock_cart();
+        wind(&mut cart, 5);
+        assert_eq!(clock(&mut cart, 0x08), 0, "no copy taken yet");
+
+        latch(&mut cart);
+        assert_eq!(clock(&mut cart, 0x08), 5);
+
+        wind(&mut cart, 5);
+        assert_eq!(
+            clock(&mut cart, 0x08),
+            5,
+            "old copy, even though it kept counting"
+        );
+        latch(&mut cart);
+        assert_eq!(clock(&mut cart, 0x08), 10);
+    }
+
+    // it takes a zero and then a one. a one on its own is not enough
+    #[test]
+    fn a_copy_needs_both_halves_of_the_signal() {
+        let mut cart = clock_cart();
+        latch(&mut cart);
+        wind(&mut cart, 5);
+
+        cart.write_rom(0x6000, 1);
+        assert_eq!(clock(&mut cart, 0x08), 0, "a one on its own copies nothing");
+
+        cart.write_rom(0x6000, 0);
+        cart.write_rom(0x6000, 1);
+        assert_eq!(clock(&mut cart, 0x08), 5);
+    }
+
+    #[test]
+    fn a_game_can_set_the_time() {
+        let mut cart = clock_cart();
+        cart.write_rom(0x4000, 0x0A);
+        cart.write_ram(0xA000, 12); // midday
+        latch(&mut cart);
+        assert_eq!(clock(&mut cart, 0x0A), 12);
+    }
+
+    // bit 6 stops it, which is what a game does while setting it
+    #[test]
+    fn a_halted_clock_stands_still() {
+        let mut cart = clock_cart();
+        cart.write_rom(0x4000, 0x0C);
+        cart.write_ram(0xA000, 0x40);
+
+        wind(&mut cart, 100);
+        latch(&mut cart);
+        assert_eq!(clock(&mut cart, 0x08), 0);
+    }
+
+    // it only counts 511 days, then it wraps and raises a flag the game has to clear
+    #[test]
+    fn running_out_of_days_raises_a_flag() {
+        let mut cart = clock_cart();
+        cart.write_rom(0x4000, 0x0B);
+        cart.write_ram(0xA000, 0xFF); // day 255 ...
+        cart.write_rom(0x4000, 0x0C);
+        cart.write_ram(0xA000, 0x01); // ... plus the ninth bit, so day 511
+        cart.write_rom(0x4000, 0x0A);
+        cart.write_ram(0xA000, 23);
+        cart.write_rom(0x4000, 0x09);
+        cart.write_ram(0xA000, 59);
         cart.write_rom(0x4000, 0x08);
-        assert_eq!(cart.read_ram(0xA000), 0xFF);
+        cart.write_ram(0xA000, 59); // one second before it runs out
+
+        wind(&mut cart, 1);
+        latch(&mut cart);
+        assert_eq!(clock(&mut cart, 0x0B), 0, "back to day zero");
+        assert_eq!(clock(&mut cart, 0x0C), 0x80, "and the flag is up");
+    }
+
+    #[test]
+    fn the_clock_answers_instead_of_save_ram() {
+        let mut cart = clock_cart();
+        cart.write_rom(0x4000, 0x00); // save RAM bank 0
+        cart.write_ram(0xA000, 0x42);
+        wind(&mut cart, 7);
+        latch(&mut cart);
+
+        assert_eq!(clock(&mut cart, 0x08), 7, "clock window");
+        cart.write_rom(0x4000, 0x00);
+        assert_eq!(cart.read_ram(0xA000), 0x42, "save RAM is untouched");
     }
 
     // this chip takes its bank number in two halves, so it can count past 255
