@@ -305,3 +305,57 @@ everything to the right. `it_draws_a_window_over_the_background` in `ppu/mod.rs`
 | window, a second layer | done |
 | sprites, things that move independently | PR-16 |
 | real colour instead of four greys | PR-17 |
+
+---
+
+## The registers, in one place
+
+Addresses a game writes to steer the screen. `R` means the game can only read it.
+
+| Address | Name | What it is |
+|---|---|---|
+| FF40 | LCDC | eight switches, listed below |
+| FF41 | STAT | what the screen is doing, and which events interrupt |
+| FF42 | SCY | background scrolled up by this much |
+| FF43 | SCX | background scrolled left by this much |
+| FF44 | LY `R` | line being drawn right now, 0 to 153 |
+| FF45 | LYC | interrupt when LY reaches this line |
+| FF47 | BGP | four greys for background, old console only |
+| FF48 | OBP0 | greys for sprites using palette 0, old console only |
+| FF49 | OBP1 | greys for sprites using palette 1, old console only |
+| FF4A | WY | top edge of window |
+| FF4B | WX | left edge of window, plus 7 |
+| FF4F | VBK | which of two video memory banks is on show |
+| FF68 | BCPS | which background colour slot FF69 will touch |
+| FF69 | BCPD | the colour itself |
+| FF6A | OCPS | which sprite colour slot FF6B will touch |
+| FF6B | OCPD | the colour itself |
+
+### LCDC, bit by bit
+
+| Bit | On means |
+|---|---|
+| 7 | screen is running at all |
+| 6 | window reads map at 9C00, not 9800 |
+| 5 | window is drawn |
+| 4 | tiles counted up from 8000, not backwards from 9000 |
+| 3 | background reads map at 9C00, not 9800 |
+| 2 | sprites are 8 by 16, not 8 by 8 |
+| 1 | sprites are drawn |
+| 0 | background is drawn (on a colour console: tiles may sit in front) |
+
+### The attribute byte
+
+One per sprite, and on a colour console one per map square too, kept in bank 1.
+
+| Bit | Means |
+|---|---|
+| 7 | sprite: hide behind background. tile: sit in front of sprites |
+| 6 | turn upside down |
+| 5 | mirror left to right |
+| 4 | sprite on an old console: use OBP1 instead of OBP0 |
+| 3 | take the picture from bank 1 |
+| 0-2 | which of 8 palettes, colour console only |
+
+Each of these bits is read in exactly one place in `ppu/mod.rs`, by a function
+named after it, so the numbers above do not appear anywhere else in the code.

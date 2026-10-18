@@ -44,6 +44,24 @@ fn colour_at(table: &[u8; 64], palette: u8, colour: u8) -> [u8; 4] {
     [channel(0), channel(5), channel(10), 0xFF]
 }
 
+// a sprite and a colour tile describe themselves with same bits
+fn mirrored(attributes: u8) -> bool {
+    attributes & 0x20 != 0
+}
+
+fn upside_down(attributes: u8) -> bool {
+    attributes & 0x40 != 0
+}
+
+// for a sprite this means hide behind background; for a tile, sit in front of sprites
+fn high_priority(attributes: u8) -> bool {
+    attributes & 0x80 != 0
+}
+
+fn picture_bank(attributes: u8) -> usize {
+    (attributes >> 3 & 1) as usize
+}
+
 // leftmost pixel is bit 7. low byte gives bottom bit of colour, high byte top bit.
 pub(crate) fn pixel_colour(low: u8, high: u8, bit: u8) -> u8 {
     let low_bit = (low >> bit) & 1;
@@ -164,8 +182,38 @@ impl Ppu {
         }
     }
 
+    // LCDC is eight switches in one byte, so each one gets a name
+    fn screen_on(&self) -> bool {
+        self.lcdc & 0x80 != 0
+    }
+
+    fn window_on(&self) -> bool {
+        self.lcdc & 0x20 != 0
+    }
+
+    fn sprites_on(&self) -> bool {
+        self.lcdc & 0x02 != 0
+    }
+
+    fn sprites_are_tall(&self) -> bool {
+        self.lcdc & 0x04 != 0
+    }
+
+    fn background_on(&self) -> bool {
+        self.lcdc & 0x01 != 0
+    }
+
+    fn tiles_count_up_from_8000(&self) -> bool {
+        self.lcdc & 0x10 != 0
+    }
+
+    // bit 2 says LY reached LYC, bit 6 says a game wants telling about it
+    fn lyc_asks_for_an_interrupt(&self) -> bool {
+        self.stat & 0x44 == 0x44
+    }
+
     pub fn tick(&mut self, t_cycles: u32) -> u8 {
-        if self.lcdc & 0x80 == 0 {
+        if !self.screen_on() {
             return 0;
         }
         let mut irq = 0;
@@ -182,7 +230,7 @@ impl Ppu {
         match self.mode {
             Mode::OamScan => {
                 if self.dot >= OAM_SCAN_DOTS {
-                    self.scan.scan(&self.oam, self.ly, self.lcdc & 0x04 != 0);
+                    self.scan.scan(&self.oam, self.ly, self.sprites_are_tall());
                     self.mode = Mode::Drawing;
                     self.fetcher.restart();
                     self.bg_fifo.clear();
@@ -261,7 +309,7 @@ impl Ppu {
             Mode::OamScan => self.stat & 0x20,
             Mode::Drawing => 0,
         };
-        mode_source != 0 || (self.stat & 0x44 == 0x44)
+        mode_source != 0 || self.lyc_asks_for_an_interrupt()
     }
 
     // only a rise asks for an interrupt, so two sources at once still give one.
@@ -276,11 +324,11 @@ impl Ppu {
     // take one pixel off queue and put it on screen, once line has started properly
     // every sprite starting at this pixel drops its 8 pixels into sprite queue
     fn fetch_sprites(&mut self) {
-        if self.lcdc & 0x02 == 0 {
+        if !self.sprites_on() {
             return; // sprites switched off
         }
         let here = self.drawn + 8;
-        let tall = self.lcdc & 0x04 != 0;
+        let tall = self.sprites_are_tall();
         for index in 0..self.scan.visible().len() {
             let sprite = self.scan.visible()[index];
             if sprite.x != here || self.fetched & (1 << index) != 0 {
@@ -290,7 +338,7 @@ impl Ppu {
             self.stall += 6; // each sprite costs six dots to go and get
             let height = if tall { 16 } else { 8 };
             let mut row = (self.ly + 16 - sprite.y) % height;
-            if sprite.attributes & 0x40 != 0 {
+            if upside_down(sprite.attributes) {
                 row = height - 1 - row; // flipped top to bottom
             }
             let tile = if tall {
@@ -302,19 +350,16 @@ impl Ppu {
             let at = 0x8000 + tile as u16 * 16 + row as u16 * 2;
             // colour console gives a sprite eight palettes and both banks, old one two and bank 0
             let (palette, bank) = if self.cgb {
-                (
-                    sprite.attributes & 0x07,
-                    (sprite.attributes >> 3 & 1) as usize,
-                )
+                (sprite.attributes & 0x07, picture_bank(sprite.attributes))
             } else {
                 ((sprite.attributes >> 4) & 1, 0)
             };
             let (low, high) = (self.vram_at(bank, at), self.vram_at(bank, at + 1));
-            let flipped = sprite.attributes & 0x20 != 0; // mirrored left to right
+            let flipped = mirrored(sprite.attributes);
             self.obj_fifo.overlay(std::array::from_fn(|step| Pixel {
                 color: pixel_colour(low, high, if flipped { step as u8 } else { 7 - step as u8 }),
                 palette,
-                priority: sprite.attributes & 0x80 != 0,
+                priority: high_priority(sprite.attributes),
             }));
         }
     }
@@ -332,7 +377,7 @@ impl Ppu {
         }
 
         // background switched off leaves screen blank, and sprites then always win
-        let behind = if self.lcdc & 0x01 == 0 {
+        let behind = if !self.background_on() {
             0
         } else {
             pixel.color
@@ -355,7 +400,7 @@ impl Ppu {
                 SHADES[((greys >> (sprite.color * 2)) & 0x03) as usize]
             }
             None if self.cgb => colour_at(&self.bcpd, pixel.palette, behind),
-            None if self.lcdc & 0x01 == 0 => BLANK,
+            None if !self.background_on() => BLANK,
             None => SHADES[((self.bgp >> (behind * 2)) & 0x03) as usize],
         };
         let at = (self.ly as usize * SCREEN_WIDTH + self.drawn as usize) * 4;
@@ -413,13 +458,13 @@ impl Ppu {
             return;
         }
         let attributes = self.fetcher.attributes;
-        let flipped = attributes & 0x20 != 0; // mirrored left to right
+        let flipped = mirrored(attributes);
         for step in 0..8 {
             let bit = if flipped { step } else { 7 - step };
             self.bg_fifo.push(Pixel {
                 color: pixel_colour(self.fetcher.data_low, self.fetcher.data_high, bit),
                 palette: attributes & 0x07,
-                priority: attributes & 0x80 != 0,
+                priority: high_priority(attributes),
             });
         }
         self.fetcher.tile_x = self.fetcher.tile_x.wrapping_add(1);
@@ -434,7 +479,7 @@ impl Ppu {
     fn start_window(&mut self) {
         let reached = self.ly >= self.wy && self.drawn + 7 >= self.wx;
         // line's own warm up happens first, even when window starts at left edge
-        if self.on_window || self.fetcher.warming_up || self.lcdc & 0x20 == 0 || !reached {
+        if self.on_window || self.fetcher.warming_up || !self.window_on() || !reached {
             return;
         }
         self.on_window = true;
@@ -477,21 +522,17 @@ impl Ppu {
     // attribute byte can turn tile upside down and take it from other bank
     fn bg_tile_row(&self, line: u8) -> (u8, u8) {
         let attributes = self.fetcher.attributes;
-        let row = if attributes & 0x40 != 0 {
+        let row = if upside_down(attributes) {
             7 - line % 8
         } else {
             line % 8
         };
-        self.tile_row(
-            self.fetcher.tile_number,
-            row,
-            (attributes >> 3 & 1) as usize,
-        )
+        self.tile_row(self.fetcher.tile_number, row, picture_bank(attributes))
     }
 
     // two bytes holding one row of a tile. LCDC bit 4 picks how tile numbers are counted.
     fn tile_row(&self, tile: u8, row: u8, bank: usize) -> (u8, u8) {
-        let address = if self.lcdc & 0x10 != 0 {
+        let address = if self.tiles_count_up_from_8000() {
             0x8000 + tile as u16 * 16 // counted from 8000 upwards
         } else {
             // counted from 9000, and numbers above 127 mean backwards
