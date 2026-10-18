@@ -7,6 +7,8 @@ const CGB_FLAG: usize = 0x0143;
 const CARTRIDGE_TYPE: usize = 0x0147;
 const ROM_SIZE: usize = 0x0148;
 const RAM_SIZE: usize = 0x0149;
+const CHECKSUM: usize = 0x014D;
+const CHECKED: core::ops::Range<usize> = 0x0134..CHECKSUM;
 const HEADER_END: usize = 0x0150;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +34,12 @@ impl Header {
     pub fn parse(rom: &[u8]) -> Result<Self, CartridgeError> {
         if rom.len() < HEADER_END {
             return Err(CartridgeError::TooSmall(rom.len()));
+        }
+
+        let found = rom[CHECKSUM];
+        let expected = header_checksum(rom);
+        if found != expected {
+            return Err(CartridgeError::BadChecksum { found, expected });
         }
 
         // Color flag sits on title's last byte, so Color titles are one character shorter.
@@ -68,4 +76,11 @@ impl Header {
             },
         })
     }
+}
+
+/// real console works this out before booting, and refuses a cartridge that disagrees.
+pub fn header_checksum(rom: &[u8]) -> u8 {
+    rom[CHECKED]
+        .iter()
+        .fold(0u8, |sum, &byte| sum.wrapping_sub(byte).wrapping_sub(1))
 }

@@ -15,16 +15,6 @@ pub enum Mbc {
         ram_enabled: bool,   // save RAM only answers after a game writes 0xA
         advanced_mode: bool, // lets those 2 bits also move bank 0 and RAM bank
     },
-    Mbc3 {
-        rom_bank: u8,
-        ram_bank: u8,
-        ram_enabled: bool,
-    },
-    Mbc5 {
-        rom_bank: u16,
-        ram_bank: u8,
-        ram_enabled: bool,
-    },
 }
 
 impl Mbc {
@@ -37,16 +27,7 @@ impl Mbc {
                 ram_enabled: false,
                 advanced_mode: false,
             }),
-            0x0F..=0x13 => Ok(Self::Mbc3 {
-                rom_bank: 1,
-                ram_bank: 0,
-                ram_enabled: false,
-            }),
-            0x19..=0x1E => Ok(Self::Mbc5 {
-                rom_bank: 1,
-                ram_bank: 0,
-                ram_enabled: false,
-            }),
+            // TODO(PR-20): MBC3 and MBC5, which most later games use
             other => Err(CartridgeError::UnsupportedMapper(other)),
         }
     }
@@ -71,8 +52,6 @@ impl Mbc {
                 let banks = (rom_len / ROM_BANK).max(1);
                 (bank % banks) * ROM_BANK + (addr as usize & 0x3FFF)
             }
-            // TODO(PR-20): MBC3 and MBC5 banking.
-            _ => todo!("PR-20: ROM banking"),
         }
     }
 
@@ -92,7 +71,6 @@ impl Mbc {
                 let bank = if advanced_mode { ram_bank as usize } else { 0 };
                 bank * RAM_BANK + (addr as usize - 0xA000)
             }
-            _ => todo!("PR-20: RAM banking"),
         };
         Some(if ram_len > 0 {
             offset % ram_len
@@ -117,7 +95,6 @@ impl Mbc {
                 0x4000..=0x5FFF => *ram_bank = value & 0x03,
                 _ => *advanced_mode = value & 0x01 != 0,
             },
-            _ => todo!("PR-20: mapper registers"),
         }
     }
 }
