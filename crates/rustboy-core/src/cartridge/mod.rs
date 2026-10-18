@@ -3,7 +3,7 @@
 mod header;
 mod mbc;
 
-pub use header::{CgbFlag, Header};
+pub use header::{CgbFlag, Header, header_checksum};
 pub use mbc::Mbc;
 
 use core::fmt;
@@ -13,6 +13,11 @@ pub enum CartridgeError {
     /// file is too short to even hold a cartridge header.
     TooSmall(usize),
     UnsupportedMapper(u8),
+    /// header does not add up, so a real console would refuse to start.
+    BadChecksum {
+        found: u8,
+        expected: u8,
+    },
 }
 
 impl fmt::Display for CartridgeError {
@@ -20,6 +25,12 @@ impl fmt::Display for CartridgeError {
         match self {
             Self::TooSmall(len) => write!(f, "ROM is {len} bytes, too small to hold a header"),
             Self::UnsupportedMapper(code) => write!(f, "unsupported cartridge type {code:#04X}"),
+            Self::BadChecksum { found, expected } => {
+                write!(
+                    f,
+                    "header checksum is {found:#04X}, should be {expected:#04X}"
+                )
+            }
         }
     }
 }
@@ -122,6 +133,11 @@ impl Cartridge {
 mod tests {
     use super::*;
 
+    // a console refuses a header that does not add up, so every fixture signs itself
+    fn sign(rom: &mut [u8]) {
+        rom[0x014D] = header_checksum(rom);
+    }
+
     #[test]
     fn rejects_a_rom_shorter_than_its_header() {
         assert_eq!(
@@ -134,6 +150,7 @@ mod tests {
     fn rejects_an_unknown_mapper() {
         let mut rom = vec![0; 0x8000];
         rom[0x0147] = 0xFE;
+        sign(&mut rom);
         assert_eq!(
             Cartridge::new(rom).unwrap_err(),
             CartridgeError::UnsupportedMapper(0xFE)
@@ -148,6 +165,7 @@ mod tests {
         }
         rom[0x0147] = 0x03; // MBC1 with RAM and a battery
         rom[0x0149] = ram_size_code;
+        sign(&mut rom);
         Cartridge::new(rom).unwrap()
     }
 
@@ -220,7 +238,49 @@ mod tests {
     fn reads_the_title() {
         let mut rom = vec![0; 0x8000];
         rom[0x0134..0x0139].copy_from_slice(b"ZELDA");
+        sign(&mut rom);
         let cart = Cartridge::new(rom).unwrap();
         assert_eq!(cart.header.title, "ZELDA");
+    }
+
+    // MBC3 and MBC5 arrive in PR-20; until then say so instead of crashing partway in
+    #[test]
+    fn rejects_a_mapper_we_have_not_written_yet() {
+        for code in [0x13, 0x1B] {
+            let mut rom = vec![0; 0x8000];
+            rom[0x0147] = code;
+            sign(&mut rom);
+            assert_eq!(
+                Cartridge::new(rom).unwrap_err(),
+                CartridgeError::UnsupportedMapper(code)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_header_that_does_not_add_up() {
+        let mut rom = vec![0; 0x8000];
+        rom[0x0134..0x0139].copy_from_slice(b"ZELDA");
+        sign(&mut rom);
+        rom[0x0135] = b'X'; // one letter changed after signing
+
+        assert_eq!(
+            Cartridge::new(rom).unwrap_err(),
+            // 'E' became 'X', 19 higher, so what the header claims is now 19 too high
+            CartridgeError::BadChecksum {
+                found: 0x77,
+                expected: 0x64,
+            }
+        );
+    }
+
+    // every real cartridge passes, so our sum has to match what hardware works out
+    #[test]
+    fn the_sum_runs_over_the_header_and_nothing_else() {
+        let mut rom = vec![0; 0x8000];
+        rom[0x0133] = 0xFF; // just before the part that counts
+        rom[0x014D] = 0xFF; // the answer itself
+        rom[0x014E] = 0xFF; // just after
+        assert_eq!(header_checksum(&rom), 0xE7, "25 bytes of zero, so 0 - 25");
     }
 }
