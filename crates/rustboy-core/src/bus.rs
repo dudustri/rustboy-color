@@ -16,6 +16,7 @@ pub const IF_JOYPAD: u8 = 1 << 4;
 const WRAM_BANK_SIZE: usize = 0x1000;
 const WRAM_BANKS: usize = 8;
 const HRAM_SIZE: usize = 0x7F;
+const OAM_BYTES: u8 = 160; // 40 sprites, four bytes each
 
 pub struct Bus {
     pub cartridge: Option<Cartridge>, // game, or None when nothing is plugged in
@@ -33,6 +34,10 @@ pub struct Bus {
     pub interrupt_flag: u8, // FF0F which interrupts are waiting to be handled
     pub interrupt_enable: u8, // FFFF which interrupts game allows
     svbk: u8,               // FF70 which work RAM bank sits at D000-DFFF
+    dma: u8,                // FF46 last block asked for, kept only so reads give it back
+    dma_from: u16,          // where next byte of that block comes from
+    dma_left: u8,           // bytes still to copy, zero when nothing is going on
+    dma_wait: u32,          // ticks before next byte moves
     key1: u8,               // FF4D ask for double speed, and report whether it is on
 }
 
@@ -57,6 +62,10 @@ impl Bus {
             hram: [0; HRAM_SIZE],
             svbk: 1,
             key1: 0,
+            dma: 0xFF,
+            dma_from: 0,
+            dma_left: 0,
+            dma_wait: 0,
             t_cycles: 0,
         }
     }
@@ -81,6 +90,7 @@ impl Bus {
         } else {
             t_cycles
         };
+        self.step_dma(base);
         self.interrupt_flag |= self.ppu.tick(base);
         self.apu.tick(base);
 
@@ -109,7 +119,33 @@ impl Bus {
         bank * WRAM_BANK_SIZE
     }
 
+    /// 160 bytes into sprite table, one every machine cycle.
+    fn step_dma(&mut self, t_cycles: u32) {
+        let mut ticks = t_cycles;
+        while self.dma_left > 0 && ticks > 0 {
+            let step = ticks.min(self.dma_wait);
+            self.dma_wait -= step;
+            ticks -= step;
+            if self.dma_wait == 0 {
+                let byte = self.read_anywhere(self.dma_from);
+                self.ppu.force_oam(OAM_BYTES - self.dma_left, byte);
+                self.dma_from += 1;
+                self.dma_left -= 1;
+                self.dma_wait = 4;
+            }
+        }
+    }
+
     pub fn read(&mut self, addr: u16) -> u8 {
+        // a copy owns bus while it runs, so only high RAM answers CPU
+        if self.dma_left > 0 && !(0xFF80..=0xFFFE).contains(&addr) {
+            return 0xFF;
+        }
+        self.read_anywhere(addr)
+    }
+
+    // copy itself is what holds bus, so it reads without asking
+    fn read_anywhere(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x7FFF => self.cartridge.as_ref().map_or(0xFF, |c| c.read_rom(addr)),
             0x8000..=0x9FFF => self.ppu.read_vram(addr),
@@ -159,6 +195,7 @@ impl Bus {
             0xFF04..=0xFF07 => self.timer.read(addr),
             0xFF0F => self.interrupt_flag | 0xE0,
             0xFF10..=0xFF3F => self.apu.read(addr),
+            0xFF46 => self.dma,
             0xFF40..=0xFF4B => self.ppu.read_register(addr),
             0xFF4D => 0x7E | self.key1 | if self.double_speed { 0x80 } else { 0x00 },
             0xFF4F => self.ppu.read_register(addr),
@@ -176,7 +213,12 @@ impl Bus {
             0xFF04..=0xFF07 => self.timer.write(addr, value),
             0xFF0F => self.interrupt_flag = value & 0x1F,
             0xFF10..=0xFF3F => self.apu.write(addr, value),
-            0xFF46 => {} // TODO(PR-18): OAM DMA
+            0xFF46 => {
+                self.dma = value;
+                self.dma_from = (value as u16) << 8;
+                self.dma_left = OAM_BYTES;
+                self.dma_wait = 4;
+            }
             0xFF40..=0xFF4B => self.interrupt_flag |= self.ppu.write_register(addr, value),
             0xFF4D => self.key1 = value & 0x01,
             0xFF4F => self.interrupt_flag |= self.ppu.write_register(addr, value),
@@ -213,5 +255,56 @@ mod tests {
         bus.write(0xFFFF, 0x22);
         assert_eq!(bus.read(0xFFFE), 0x11);
         assert_eq!(bus.read(0xFFFF), 0x22);
+    }
+
+    // fill a page of work RAM, then ask for it to be copied into sprite table
+    fn start_dma(bus: &mut Bus) {
+        bus.write(0xFF40, 0x00); // screen off, so sprite table is readable in test
+        for i in 0..OAM_BYTES as u16 {
+            bus.write(0xC100 + i, 0x40 + i as u8); // never zero, so untouched bytes stand out
+        }
+        bus.write(0xFF46, 0xC1);
+    }
+
+    #[test]
+    fn a_copy_moves_one_byte_every_machine_cycle() {
+        let mut bus = Bus::testing();
+        start_dma(&mut bus);
+
+        bus.tick(4);
+        assert_eq!(bus.ppu.read_oam(0xFE00), 0x40, "first byte landed");
+        assert_eq!(bus.ppu.read_oam(0xFE01), 0, "second has not yet");
+
+        bus.tick(4);
+        assert_eq!(bus.ppu.read_oam(0xFE01), 0x41);
+    }
+
+    #[test]
+    fn a_copy_ends_after_160_bytes() {
+        let mut bus = Bus::testing();
+        start_dma(&mut bus);
+        bus.tick(4 * OAM_BYTES as u32);
+
+        assert_eq!(bus.ppu.read_oam(0xFE9F), 0x40 + 159, "last byte landed");
+        assert_eq!(bus.read(0xC100), 0x40, "bus is free again");
+    }
+
+    #[test]
+    fn only_high_ram_answers_while_a_copy_runs() {
+        let mut bus = Bus::testing();
+        bus.write(0xFF80, 0x42);
+        start_dma(&mut bus);
+        bus.tick(4);
+
+        assert_eq!(bus.read(0xC100), 0xFF, "work RAM is shut out");
+        assert_eq!(bus.read(0xFF80), 0x42, "high RAM still answers");
+    }
+
+    #[test]
+    fn the_block_asked_for_reads_back() {
+        let mut bus = Bus::testing();
+        bus.write(0xFF46, 0xC1);
+        bus.tick(4 * OAM_BYTES as u32);
+        assert_eq!(bus.read(0xFF46), 0xC1);
     }
 }

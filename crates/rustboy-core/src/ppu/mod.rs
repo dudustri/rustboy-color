@@ -586,6 +586,11 @@ impl Ppu {
         }
     }
 
+    /// a bulk copy writes straight in, ignoring lock a drawing screen puts on.
+    pub fn force_oam(&mut self, index: u8, value: u8) {
+        self.oam[index as usize] = value;
+    }
+
     pub fn read_register(&self, addr: u16) -> u8 {
         match addr {
             0xFF40 => self.lcdc,
