@@ -300,8 +300,16 @@ impl Ppu {
             };
             // sprites always count tiles up from 8000, never backwards like background can
             let at = 0x8000 + tile as u16 * 16 + row as u16 * 2;
-            let (low, high) = (self.vram_at(0, at), self.vram_at(0, at + 1));
-            let palette = (sprite.attributes >> 4) & 1;
+            // colour console gives a sprite eight palettes and both banks, old one two and bank 0
+            let (palette, bank) = if self.cgb {
+                (
+                    sprite.attributes & 0x07,
+                    (sprite.attributes >> 3 & 1) as usize,
+                )
+            } else {
+                ((sprite.attributes >> 4) & 1, 0)
+            };
+            let (low, high) = (self.vram_at(bank, at), self.vram_at(bank, at + 1));
             let flipped = sprite.attributes & 0x20 != 0; // mirrored left to right
             self.obj_fifo.overlay(std::array::from_fn(|step| Pixel {
                 color: pixel_colour(low, high, if flipped { step as u8 } else { 7 - step as u8 }),
@@ -1686,5 +1694,50 @@ mod tests {
         ppu.tick(DOTS_PER_LINE);
 
         assert_eq!(shade_at(&ppu, 40, 0), SHADES[1], "still plain shade 1");
+    }
+
+    #[test]
+    fn a_colour_sprite_can_use_any_of_eight_palettes() {
+        let mut ppu = colour_ppu();
+        put_colour(&mut ppu, 0xFF6A, 0xFF6B, 5 * 4 + 3, BLUE); // palette 5, colour 3
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 5)); // low bits now pick palette
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(shade_at(&ppu, 40, 0), [0x00, 0x00, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn a_colour_sprite_can_be_drawn_from_the_other_bank() {
+        let mut ppu = colour_ppu();
+        put_colour(&mut ppu, 0xFF68, 0xFF69, 1, RED); // background behind it
+        put_colour(&mut ppu, 0xFF6A, 0xFF6B, 3, BLUE);
+        ppu.write_register(0xFF4F, 1);
+        for row in 0..8 {
+            ppu.write_vram(0x8050 + row * 2, 0xFF); // tile 5 is solid, but only in this bank
+            ppu.write_vram(0x8051 + row * 2, 0xFF);
+        }
+        ppu.write_register(0xFF4F, 0);
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 5, 0x08));
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(
+            shade_at(&ppu, 40, 0),
+            [0x00, 0x00, 0xFF, 0xFF],
+            "bank 0 holds nothing at tile 5, so background would show through"
+        );
+    }
+
+    // bit 4 is the only palette choice an old console has, and bits 0 to 3 mean nothing
+    #[test]
+    fn an_old_console_reads_only_the_one_palette_bit() {
+        let mut ppu = ppu_with_sprites();
+        put_sprite(&mut ppu, 0, (16, 8 + 40, 2, 0x17)); // bit 4 set, low bits noise
+        ppu.tick(DOTS_PER_LINE);
+
+        assert_eq!(
+            shade_at(&ppu, 40, 0),
+            SHADES[0],
+            "palette 1 turns shade 3 into 0"
+        );
     }
 }
