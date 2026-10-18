@@ -18,22 +18,48 @@ use web_sys::{
 type FrameLoop = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
 // frame loop and key handlers all reach same frontend.
 type Shared = Rc<RefCell<Frontend>>;
+// file picker sets which game's save to write; frame loop reads it.
+type SaveKey = Rc<RefCell<Option<String>>>;
 
 /// everything shared frontend needs from a browser tab.
 struct Browser {
     context: CanvasRenderingContext2d,
-    pixels: Vec<u8>, // painted here, then handed to canvas in one go
-    started: f64,    // milliseconds, from browser's own clock
+    pixels: Vec<u8>,   // painted here, then handed to canvas in one go
+    started: f64,      // milliseconds, from browser's own clock
+    save_key: SaveKey, // which game's save to write, set by file picker
 }
 
 impl Browser {
-    fn new(context: CanvasRenderingContext2d) -> Self {
+    fn new(context: CanvasRenderingContext2d, save_key: SaveKey) -> Self {
         Self {
             context,
             pixels: vec![0; FRAMEBUFFER_LEN],
             started: now_ms(),
+            save_key,
         }
     }
+}
+
+/// browser's own store, which keeps things between visits. `None` if page is not allowed one.
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+/// one key per game, so two games do not write over each other.
+fn save_key(title: &str) -> String {
+    format!("rustboy-save:{title}")
+}
+
+/// save bytes become text, since a browser store only holds text.
+fn to_text(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn from_text(text: &str) -> Vec<u8> {
+    text.as_bytes()
+        .chunks(2)
+        .filter_map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+        .collect()
 }
 
 impl Host for Browser {
@@ -54,6 +80,16 @@ impl Host for Browser {
                 Err(_) => return, // nothing sensible to do in a tab
             };
         let _ = self.context.put_image_data(&image, 0.0, 0.0);
+    }
+
+    fn write_save(&mut self, data: &[u8]) {
+        let key = self.save_key.borrow();
+        let (Some(key), Some(storage)) = (key.as_ref(), storage()) else {
+            return;
+        };
+        if storage.set_item(key, &to_text(data)).is_err() {
+            complain("could not keep that save; browser store may be full or switched off");
+        }
     }
 }
 
@@ -127,20 +163,29 @@ fn complain(message: &str) {
     web_sys::console::error_1(&JsValue::from_str(message));
 }
 
-// hand bytes reader collected to frontend.
-fn take_rom(reader: &FileReader, frontend: &Shared) {
+// hand bytes reader collected to frontend, and bring back that game's old save.
+fn take_rom(reader: &FileReader, frontend: &Shared, key: &SaveKey) {
     let Ok(buffer) = reader.result() else {
         return complain("could not read that file");
     };
     let rom = js_sys::Uint8Array::new(&buffer).to_vec();
-    match frontend.borrow_mut().load_rom(rom) {
-        Ok(()) => (),
-        Err(error) => complain(&format!("that is not a game we can run: {error}")),
+    let mut frontend = frontend.borrow_mut();
+    if let Err(error) = frontend.load_rom(rom) {
+        return complain(&format!("that is not a game we can run: {error}"));
     }
+
+    let Some(name) = frontend.title().map(str::to_owned) else {
+        return;
+    };
+    let title = save_key(&name);
+    if let Some(text) = storage().and_then(|s| s.get_item(&title).ok().flatten()) {
+        frontend.load_save_ram(&from_text(&text)); // carry on from last time
+    }
+    *key.borrow_mut() = Some(title);
 }
 
 // watch a file picker and load whatever gets chosen.
-fn listen_for_rom(input_id: &str, frontend: &Shared) -> Result<(), JsValue> {
+fn listen_for_rom(input_id: &str, frontend: &Shared, key: &SaveKey) -> Result<(), JsValue> {
     let document = web_sys::window()
         .and_then(|w| w.document())
         .ok_or_else(|| JsValue::from_str("no document"))?;
@@ -150,6 +195,7 @@ fn listen_for_rom(input_id: &str, frontend: &Shared) -> Result<(), JsValue> {
         .dyn_into()?;
 
     let frontend = Rc::clone(frontend);
+    let key = Rc::clone(key);
     let handler = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
         let Some(file) = event
             .target()
@@ -167,7 +213,8 @@ fn listen_for_rom(input_id: &str, frontend: &Shared) -> Result<(), JsValue> {
         // reading is asynchronous, so rest happens in this second callback.
         let done = reader.clone();
         let frontend = Rc::clone(&frontend);
-        let onload = Closure::<dyn FnMut()>::new(move || take_rom(&done, &frontend));
+        let key = Rc::clone(&key);
+        let onload = Closure::<dyn FnMut()>::new(move || take_rom(&done, &frontend, &key));
         reader.set_onload(Some(onload.as_ref().unchecked_ref()));
         onload.forget();
 
@@ -193,12 +240,13 @@ fn request_frame(callback: &Closure<dyn FnMut()>) {
 pub fn start(canvas_id: &str, rom_input_id: &str) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
 
-    let mut browser = Browser::new(canvas_context(canvas_id)?);
+    let save_key: SaveKey = Rc::new(RefCell::new(None));
+    let mut browser = Browser::new(canvas_context(canvas_id)?, Rc::clone(&save_key));
     let frontend: Shared = Rc::new(RefCell::new(Frontend::new()));
 
     listen("keydown", &frontend, true)?;
     listen("keyup", &frontend, false)?;
-    listen_for_rom(rom_input_id, &frontend)?;
+    listen_for_rom(rom_input_id, &frontend, &save_key)?;
 
     let next: FrameLoop = Rc::new(RefCell::new(None));
     let me = Rc::clone(&next);

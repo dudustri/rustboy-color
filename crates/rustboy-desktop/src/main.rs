@@ -4,7 +4,7 @@
 //!
 //! pass a game on command line: `cargo run -p rustboy-desktop -- game.gbc`
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,8 @@ struct Desktop {
     window: Arc<Window>,
     pixels: Pixels<'static>,
     started: Instant,
-    next_frame: Instant, // when next frame is due
+    next_frame: Instant,   // when next frame is due
+    save: Option<PathBuf>, // where this game's save lives, if it has one
 }
 
 impl Host for Desktop {
@@ -46,11 +47,29 @@ impl Host for Desktop {
             eprintln!("could not draw the frame: {error}");
         }
     }
+
+    fn write_save(&mut self, data: &[u8]) {
+        let Some(path) = self.save.as_ref() else {
+            return;
+        };
+        // write beside it first, then swap, so a crash midway cannot shred an old save
+        let partial = path.with_extension("sav.part");
+        let written = std::fs::write(&partial, data).and_then(|()| std::fs::rename(&partial, path));
+        if let Err(error) = written {
+            eprintln!("could not save to {}: {error}", path.display());
+        }
+    }
+}
+
+/// a game's save sits beside it, named the same but ending .sav.
+fn save_path(rom: &Path) -> PathBuf {
+    rom.with_extension("sav")
 }
 
 struct App {
     frontend: Frontend,
     desktop: Option<Desktop>, // None until event loop hands us a window
+    save: Option<PathBuf>,    // remembered from command line until window exists
 }
 
 impl App {
@@ -58,6 +77,7 @@ impl App {
         Self {
             frontend: Frontend::new(),
             desktop: None,
+            save: None,
         }
     }
 
@@ -121,6 +141,7 @@ impl ApplicationHandler for App {
                     pixels,
                     started: now,
                     next_frame: now,
+                    save: self.save.clone(),
                 })
             }
             Err(error) => {
@@ -184,21 +205,28 @@ impl ApplicationHandler for App {
 }
 
 // read game named on command line, if there is one.
-fn load_rom(frontend: &mut Frontend) -> Result<(), String> {
+fn load_rom(app: &mut App) -> Result<(), String> {
     let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) else {
         return Ok(()); // no game is fine; console shows a blank screen
     };
 
     let rom =
         std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
-    frontend
+    app.frontend
         .load_rom(rom)
-        .map_err(|e| format!("{} is not a game we can run: {e}", path.display()))
+        .map_err(|e| format!("{} is not a game we can run: {e}", path.display()))?;
+
+    let save = save_path(&path);
+    if let Ok(data) = std::fs::read(&save) {
+        app.frontend.load_save_ram(&data); // carry on from last time
+    }
+    app.save = Some(save);
+    Ok(())
 }
 
 fn main() {
     let mut app = App::new();
-    if let Err(problem) = load_rom(&mut app.frontend) {
+    if let Err(problem) = load_rom(&mut app) {
         eprintln!("{problem}");
         return;
     }
