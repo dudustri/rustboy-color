@@ -11,7 +11,7 @@ pub mod serial;
 pub mod timer;
 
 pub use bus::Bus;
-pub use cartridge::{Cartridge, CartridgeError};
+pub use cartridge::{Cartridge, CartridgeError, header_checksum};
 pub use cpu::Cpu;
 pub use emulator::Emulator;
 pub use joypad::Button;

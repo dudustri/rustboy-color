@@ -63,9 +63,20 @@ impl Emulator {
         self.bus.apu.drain(out);
     }
 
-    /// Game's save data for host to store. `None` when no cartridge is in.
+    /// Game's save data for host to store. `None` unless a game with a battery is in.
     pub fn save_ram(&self) -> Option<&[u8]> {
-        self.bus.cartridge.as_ref().map(|c| c.ram())
+        self.bus.cartridge.as_ref().and_then(|c| c.ram())
+    }
+
+    /// true once a game has written its save since host last took a copy.
+    pub fn save_changed(&self) -> bool {
+        self.bus.cartridge.as_ref().is_some_and(|c| c.changed())
+    }
+
+    pub fn mark_saved(&mut self) {
+        if let Some(cartridge) = self.bus.cartridge.as_mut() {
+            cartridge.mark_saved();
+        }
     }
 
     pub fn load_save_ram(&mut self, data: &[u8]) {

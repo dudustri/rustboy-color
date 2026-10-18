@@ -31,6 +31,14 @@ pub struct Header {
 }
 
 impl Header {
+    /// only a cartridge with a battery keeps its save RAM once power is gone.
+    pub fn has_battery(&self) -> bool {
+        matches!(
+            self.cartridge_type,
+            0x03 | 0x06 | 0x09 | 0x0D | 0x0F | 0x10 | 0x13 | 0x1B | 0x1E | 0x22 | 0xFF
+        )
+    }
+
     pub fn parse(rom: &[u8]) -> Result<Self, CartridgeError> {
         if rom.len() < HEADER_END {
             return Err(CartridgeError::TooSmall(rom.len()));

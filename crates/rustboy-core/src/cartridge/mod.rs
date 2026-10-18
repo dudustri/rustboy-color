@@ -42,6 +42,7 @@ pub struct Cartridge {
     rom: Vec<u8>,       // whole game file
     ram: Vec<u8>,       // save data, kept alive by a battery in cart
     mbc: Mbc,           // chip that swaps banks in and out
+    changed: bool,      // save RAM was written since host last took a copy
 }
 
 impl fmt::Debug for Cartridge {
@@ -66,6 +67,7 @@ impl Cartridge {
             rom,
             ram,
             mbc,
+            changed: false,
         })
     }
 
@@ -82,6 +84,7 @@ impl Cartridge {
             rom: vec![0xFF; 0x8000],
             ram: vec![0; 0x2000],
             mbc: Mbc::None { writable: true },
+            changed: false,
         }
     }
 
@@ -126,17 +129,28 @@ impl Cartridge {
             && offset < self.ram.len()
         {
             self.ram[offset] = value;
+            self.changed = true;
         }
     }
 
-    /// save data, for host to keep on disk.
-    pub fn ram(&self) -> &[u8] {
-        &self.ram
+    /// save data, for host to keep on disk. `None` when this game cannot save.
+    pub fn ram(&self) -> Option<&[u8]> {
+        self.header.has_battery().then_some(self.ram.as_slice())
+    }
+
+    /// true once save RAM has been written. Host clears it by taking a copy.
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.changed = false;
     }
 
     pub fn load_ram(&mut self, data: &[u8]) {
         let len = data.len().min(self.ram.len());
         self.ram[..len].copy_from_slice(&data[..len]);
+        self.changed = false; // just read back in, so nothing new to write out
     }
 }
 
