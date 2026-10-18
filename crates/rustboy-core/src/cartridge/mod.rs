@@ -158,15 +158,26 @@ mod tests {
     }
 
     // an MBC1 cartridge where first byte of every bank holds that bank's own number.
-    fn mbc1(banks: usize, ram_size_code: u8) -> Cartridge {
+    // each bank starts with its own number, so a read says which one is in the window
+    fn cart(kind: u8, banks: usize, ram_size_code: u8) -> Cartridge {
         let mut rom = vec![0; banks * 0x4000];
         for bank in 0..banks {
             rom[bank * 0x4000] = bank as u8;
+            rom[bank * 0x4000 + 1] = (bank >> 8) as u8;
         }
-        rom[0x0147] = 0x03; // MBC1 with RAM and a battery
+        rom[0x0147] = kind;
         rom[0x0149] = ram_size_code;
         sign(&mut rom);
         Cartridge::new(rom).unwrap()
+    }
+
+    fn mbc1(banks: usize, ram_size_code: u8) -> Cartridge {
+        cart(0x03, banks, ram_size_code) // MBC1 with RAM and a battery
+    }
+
+    // which bank the window at 4000 is showing
+    fn banked(cart: &Cartridge) -> usize {
+        cart.read_rom(0x4000) as usize | (cart.read_rom(0x4001) as usize) << 8
     }
 
     #[test]
@@ -243,17 +254,80 @@ mod tests {
         assert_eq!(cart.header.title, "ZELDA");
     }
 
-    // MBC3 and MBC5 arrive in PR-20; until then say so instead of crashing partway in
     #[test]
-    fn rejects_a_mapper_we_have_not_written_yet() {
-        for code in [0x13, 0x1B] {
-            let mut rom = vec![0; 0x8000];
-            rom[0x0147] = code;
-            sign(&mut rom);
-            assert_eq!(
-                Cartridge::new(rom).unwrap_err(),
-                CartridgeError::UnsupportedMapper(code)
-            );
+    fn mbc3_reaches_all_127_banks() {
+        let mut cart = cart(0x13, 128, 0x03);
+        cart.write_rom(0x2000, 0x7F);
+        assert_eq!(banked(&cart), 0x7F);
+    }
+
+    #[test]
+    fn mbc3_turns_a_request_for_bank_zero_into_bank_one() {
+        let mut cart = cart(0x13, 4, 0x00);
+        cart.write_rom(0x2000, 0x00);
+        assert_eq!(banked(&cart), 1);
+    }
+
+    #[test]
+    fn mbc3_switches_between_four_ram_banks() {
+        let mut cart = cart(0x13, 4, 0x03); // 32 KiB of save RAM, so four banks
+        cart.write_rom(0x0000, 0x0A); // switch RAM on
+        for bank in 0..4 {
+            cart.write_rom(0x4000, bank);
+            cart.write_ram(0xA000, 0x10 + bank);
+        }
+        for bank in 0..4 {
+            cart.write_rom(0x4000, bank);
+            assert_eq!(cart.read_ram(0xA000), 0x10 + bank, "bank {bank}");
+        }
+    }
+
+    // banks 8 to 12 are the clock, which arrives later, so no save RAM answers there
+    #[test]
+    fn mbc3_gives_nothing_back_where_the_clock_will_be() {
+        let mut cart = cart(0x13, 4, 0x03);
+        cart.write_rom(0x0000, 0x0A);
+        cart.write_rom(0x4000, 0x08);
+        assert_eq!(cart.read_ram(0xA000), 0xFF);
+    }
+
+    // this chip takes its bank number in two halves, so it can count past 255
+    #[test]
+    fn mbc5_reaches_banks_above_255() {
+        let mut cart = cart(0x1B, 512, 0x03);
+        cart.write_rom(0x2000, 0x34); // low half
+        cart.write_rom(0x3000, 0x01); // high bit
+        assert_eq!(banked(&cart), 0x134);
+    }
+
+    // unlike the older chips this one really does let bank 0 into the window
+    #[test]
+    fn mbc5_allows_bank_zero_in_the_window() {
+        let mut cart = cart(0x1B, 4, 0x00);
+        cart.write_rom(0x2000, 0x00);
+        assert_eq!(banked(&cart), 0);
+    }
+
+    #[test]
+    fn mbc5_switches_between_sixteen_ram_banks() {
+        let mut cart = cart(0x1B, 4, 0x04); // 128 KiB of save RAM, so sixteen banks
+        cart.write_rom(0x0000, 0x0A);
+        for bank in 0..16 {
+            cart.write_rom(0x4000, bank);
+            cart.write_ram(0xA000, 0x20 + bank);
+        }
+        for bank in 0..16 {
+            cart.write_rom(0x4000, bank);
+            assert_eq!(cart.read_ram(0xA000), 0x20 + bank, "bank {bank}");
+        }
+    }
+
+    #[test]
+    fn the_newer_chips_keep_ram_shut_until_asked() {
+        for kind in [0x13, 0x1B] {
+            let mut cart = cart(kind, 4, 0x03);
+            cart.write_ram(0xA000, 0x42);
+            assert_eq!(cart.read_ram(0xA000), 0xFF, "type {kind:#04X}");
         }
     }
 
