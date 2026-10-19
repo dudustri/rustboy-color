@@ -17,6 +17,16 @@ pub struct Pulse {
     pub dac_on: bool,  // a game can cut channel off entirely, whatever else is set
     step: u8,          // where we are in eight step shape
     timer: u16,        // ticks left before next step
+
+    // a note can be told to stop by itself after a set time
+    pub length_enabled: bool,
+    length: u8, // counts down to zero, then channel stops
+
+    // volume can walk up or down on its own, which is how notes fade
+    pub env_start: u8,  // volume to begin at
+    pub env_up: bool,   // true grows louder, false fades
+    pub env_period: u8, // steps between each change. zero means never change
+    env_timer: u8,      // steps left before next change
 }
 
 impl Pulse {
@@ -38,6 +48,44 @@ impl Pulse {
     pub fn trigger(&mut self) {
         self.enabled = self.dac_on;
         self.timer = self.reload();
+        if self.length == 0 {
+            self.length = 64; // a note triggered with no time left gets a full one
+        }
+        self.volume = self.env_start;
+        self.env_timer = self.env_period;
+    }
+
+    /// how long a note lasts, counted down 256 times a second. Written as time already used.
+    pub fn set_length(&mut self, used: u8) {
+        self.length = 64 - (used & 0x3F);
+    }
+
+    /// 256 times a second. A note that runs out of time stops itself.
+    pub fn tick_length(&mut self) {
+        if !self.length_enabled || self.length == 0 {
+            return;
+        }
+        self.length -= 1;
+        if self.length == 0 {
+            self.enabled = false;
+        }
+    }
+
+    /// 64 times a second. Moves volume one step towards loud or quiet.
+    pub fn tick_envelope(&mut self) {
+        if self.env_period == 0 {
+            return; // a game that asks for no change gets none
+        }
+        self.env_timer = self.env_timer.saturating_sub(1);
+        if self.env_timer > 0 {
+            return;
+        }
+        self.env_timer = self.env_period;
+        match (self.env_up, self.volume) {
+            (true, v) if v < 15 => self.volume += 1,
+            (false, v) if v > 0 => self.volume -= 1,
+            _ => {} // already as loud or as quiet as it goes, so it stays there
+        }
     }
 
     /// how loud this channel is right now, 0 to 15.
@@ -58,7 +106,7 @@ mod tests {
         let mut pulse = Pulse {
             duty,
             period,
-            volume: 15,
+            env_start: 15, // trigger copies this into volume, as a real write does
             dac_on: true,
             ..Pulse::default()
         };
@@ -118,7 +166,7 @@ mod tests {
             volume: 15,
             dac_on: true,
             ..Pulse::default()
-        };
+        }; // never triggered, so it stays quiet whatever else is set
         assert_eq!(pulse.output(), 0);
     }
 
@@ -145,5 +193,109 @@ mod tests {
             .max()
             .unwrap();
         assert_eq!(loudest, 4);
+    }
+
+    #[test]
+    fn a_note_with_a_time_limit_stops_itself() {
+        let mut pulse = playing(2, 2040);
+        pulse.set_length(63); // one beat of time left
+        pulse.length_enabled = true;
+
+        pulse.tick_length();
+        assert!(!pulse.enabled, "its time ran out");
+    }
+
+    #[test]
+    fn a_note_with_no_time_limit_plays_on() {
+        let mut pulse = playing(2, 2040);
+        pulse.set_length(63);
+        pulse.length_enabled = false;
+
+        for _ in 0..100 {
+            pulse.tick_length();
+        }
+        assert!(pulse.enabled);
+    }
+
+    // a full note is 64 beats, which is a quarter of a second
+    #[test]
+    fn a_fresh_note_lasts_sixty_four_beats() {
+        let mut pulse = playing(2, 2040);
+        pulse.set_length(0);
+        pulse.length_enabled = true;
+
+        for beat in 0..63 {
+            pulse.tick_length();
+            assert!(pulse.enabled, "stopped early at beat {beat}");
+        }
+        pulse.tick_length();
+        assert!(!pulse.enabled);
+    }
+
+    #[test]
+    fn a_fading_note_loses_volume_a_step_at_a_time() {
+        let mut pulse = playing(2, 2040);
+        pulse.env_period = 1;
+        pulse.env_up = false;
+        pulse.trigger();
+
+        assert_eq!(pulse.volume, 15);
+        pulse.tick_envelope();
+        assert_eq!(pulse.volume, 14);
+        pulse.tick_envelope();
+        assert_eq!(pulse.volume, 13);
+    }
+
+    #[test]
+    fn a_fade_stops_at_silence_and_stays_there() {
+        let mut pulse = playing(2, 2040);
+        pulse.env_start = 2;
+        pulse.env_period = 1;
+        pulse.trigger();
+
+        for _ in 0..10 {
+            pulse.tick_envelope();
+        }
+        assert_eq!(pulse.volume, 0);
+    }
+
+    #[test]
+    fn a_swelling_note_stops_at_the_loudest() {
+        let mut pulse = playing(2, 2040);
+        pulse.env_start = 13;
+        pulse.env_period = 1;
+        pulse.env_up = true;
+        pulse.trigger();
+
+        for _ in 0..10 {
+            pulse.tick_envelope();
+        }
+        assert_eq!(pulse.volume, 15);
+    }
+
+    // a bigger period means it waits that many beats between each change
+    #[test]
+    fn the_envelope_period_sets_how_fast_it_fades() {
+        let mut pulse = playing(2, 2040);
+        pulse.env_period = 3;
+        pulse.trigger();
+
+        pulse.tick_envelope();
+        pulse.tick_envelope();
+        assert_eq!(pulse.volume, 15, "not yet");
+        pulse.tick_envelope();
+        assert_eq!(pulse.volume, 14, "third beat moves it");
+    }
+
+    #[test]
+    fn a_volume_that_never_changes_is_left_alone() {
+        let mut pulse = playing(2, 2040);
+        pulse.env_period = 0;
+        pulse.trigger();
+
+        for _ in 0..100 {
+            pulse.tick_envelope();
+        }
+        assert_eq!(pulse.volume, 15);
     }
 }
