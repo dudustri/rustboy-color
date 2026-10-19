@@ -27,6 +27,14 @@ pub struct Pulse {
     pub env_up: bool,   // true grows louder, false fades
     pub env_period: u8, // steps between each change. zero means never change
     env_timer: u8,      // steps left before next change
+
+    // channel one only: note can slide up or down by itself
+    pub sweep_period: u8, // beats between each slide. zero means it never slides
+    pub sweep_down: bool, // true shrinks period number, which raises note
+    pub sweep_shift: u8,  // how big a step: period divided by two this many times
+    sweep_timer: u8,      // beats left before next slide
+    sweep_on: bool,       // set up when note starts
+    shadow: u16,          // period slide works on, kept apart from one being played
 }
 
 impl Pulse {
@@ -53,6 +61,61 @@ impl Pulse {
         }
         self.volume = self.env_start;
         self.env_timer = self.env_period;
+
+        self.shadow = self.period;
+        self.sweep_timer = self.sweep_reload();
+        self.sweep_on = self.sweep_period != 0 || self.sweep_shift != 0;
+        // a note that would slide straight off the top never gets to play
+        if self.sweep_shift != 0 && self.swept() > 2047 {
+            self.enabled = false;
+        }
+    }
+
+    fn sweep_reload(&self) -> u8 {
+        if self.sweep_period == 0 {
+            8 // zero behaves as eight here, so timer keeps turning over
+        } else {
+            self.sweep_period
+        }
+    }
+
+    /// where note would land on next slide. A smaller number is a higher note.
+    fn swept(&self) -> u16 {
+        let step = self.shadow >> self.sweep_shift;
+        if self.sweep_down {
+            self.shadow.saturating_sub(step)
+        } else {
+            self.shadow + step
+        }
+    }
+
+    /// 128 times a second. Slides note along, and stops channel if it runs off the top.
+    pub fn tick_sweep(&mut self) {
+        if !self.sweep_on {
+            return;
+        }
+        self.sweep_timer = self.sweep_timer.saturating_sub(1);
+        if self.sweep_timer > 0 {
+            return;
+        }
+        self.sweep_timer = self.sweep_reload();
+        if self.sweep_period == 0 {
+            return; // timer keeps turning, but nothing slides
+        }
+
+        let next = self.swept();
+        if next > 2047 {
+            self.enabled = false; // slid past lowest note there is
+            return;
+        }
+        if self.sweep_shift != 0 {
+            self.shadow = next;
+            self.period = next;
+            // hardware looks one slide further ahead, and stops early if that would overflow
+            if self.swept() > 2047 {
+                self.enabled = false;
+            }
+        }
     }
 
     /// how long a note lasts, counted down 256 times a second. Written as time already used.
@@ -297,5 +360,100 @@ mod tests {
             pulse.tick_envelope();
         }
         assert_eq!(pulse.volume, 15);
+    }
+
+    // a sliding note, starting at period 1024
+    fn sliding(down: bool, period: u8, shift: u8) -> Pulse {
+        let mut pulse = playing(2, 1024);
+        pulse.sweep_down = down;
+        pulse.sweep_period = period;
+        pulse.sweep_shift = shift;
+        pulse.trigger();
+        pulse
+    }
+
+    // period divided by four is 256, so each slide drops that much off period number
+    #[test]
+    fn a_note_sliding_up_loses_period_each_time() {
+        let mut pulse = sliding(true, 1, 2);
+        pulse.tick_sweep();
+        assert_eq!(pulse.period, 1024 - 256);
+        pulse.tick_sweep();
+        assert_eq!(pulse.period, 768 - 192, "step shrinks with period");
+    }
+
+    #[test]
+    fn a_note_sliding_down_gains_period_each_time() {
+        let mut pulse = sliding(false, 1, 2);
+        pulse.tick_sweep();
+        assert_eq!(pulse.period, 1024 + 256);
+    }
+
+    // a bigger shift means a smaller step, since it divides more times
+    #[test]
+    fn the_shift_sets_how_far_each_slide_moves() {
+        for (shift, step) in [(1, 512), (2, 256), (4, 64)] {
+            let mut pulse = sliding(true, 1, shift);
+            pulse.tick_sweep();
+            assert_eq!(pulse.period, 1024 - step, "shift {shift}");
+        }
+    }
+
+    // period here is how many beats to wait, not how far to move
+    #[test]
+    fn the_sweep_period_sets_how_often_it_slides() {
+        let mut pulse = sliding(true, 3, 2);
+        pulse.tick_sweep();
+        pulse.tick_sweep();
+        assert_eq!(pulse.period, 1024, "not yet");
+        pulse.tick_sweep();
+        assert_eq!(pulse.period, 768, "third beat moves it");
+    }
+
+    #[test]
+    fn a_note_told_never_to_slide_stays_put() {
+        let mut pulse = sliding(true, 0, 2);
+        for _ in 0..50 {
+            pulse.tick_sweep();
+        }
+        assert_eq!(pulse.period, 1024);
+        assert!(pulse.enabled);
+    }
+
+    // sliding down past the lowest note there is stops channel instead of wrapping
+    #[test]
+    fn sliding_off_the_bottom_stops_the_note() {
+        let mut pulse = sliding(false, 1, 1);
+        for _ in 0..10 {
+            pulse.tick_sweep();
+        }
+        assert!(!pulse.enabled);
+        assert!(
+            pulse.period <= 2047,
+            "it never played a wrapped around note"
+        );
+    }
+
+    // hardware checks before playing, so a note that cannot survive one slide never starts
+    #[test]
+    fn a_note_that_would_overflow_at_once_never_plays() {
+        let mut pulse = playing(2, 2000);
+        pulse.sweep_down = false;
+        pulse.sweep_period = 1;
+        pulse.sweep_shift = 1; // 2000 plus 1000 is past the top
+        pulse.trigger();
+        assert!(!pulse.enabled);
+    }
+
+    #[test]
+    fn channel_two_never_slides() {
+        let mut apu = crate::apu::Apu::new();
+        apu.write(0xFF26, 0x80);
+        apu.write(0xFF10, 0x11); // a slide setting, which only channel one listens to
+        apu.write(0xFF17, 0xF0);
+        apu.write(0xFF18, 0x00);
+        apu.write(0xFF19, 0x84);
+        apu.tick(crate::T_CYCLES_PER_SECOND / 4);
+        assert_eq!(apu.pulse2.period, 1024);
     }
 }

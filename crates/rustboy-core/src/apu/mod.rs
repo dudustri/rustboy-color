@@ -69,6 +69,9 @@ impl Apu {
             self.pulse1.tick_length();
             self.pulse2.tick_length();
         }
+        if self.beat == 2 || self.beat == 6 {
+            self.pulse1.tick_sweep(); // only channel one can slide
+        }
         if self.beat == 7 {
             self.pulse1.tick_envelope();
             self.pulse2.tick_envelope();
@@ -96,6 +99,11 @@ impl Apu {
     pub fn write(&mut self, addr: u16, value: u8) {
         self.registers[(addr - REGISTER_BASE) as usize] = value;
         match addr {
+            0xFF10 => {
+                self.pulse1.sweep_period = (value >> 4) & 0x07;
+                self.pulse1.sweep_down = value & 0x08 != 0;
+                self.pulse1.sweep_shift = value & 0x07;
+            }
             0xFF11 => {
                 self.pulse1.duty = value >> 6;
                 self.pulse1.set_length(value);
