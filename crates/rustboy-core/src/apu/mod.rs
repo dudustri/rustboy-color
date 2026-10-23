@@ -1,8 +1,12 @@
-//! sound chip. Two square wave channels work; wave and noise arrive in PR-23.
+//! sound chip: two square channels, one drawn shape, and one hiss.
 
+mod noise;
 mod pulse;
+mod wave;
 
+pub use noise::Noise;
 pub use pulse::Pulse;
+pub use wave::Wave;
 
 use crate::{AUDIO_SAMPLE_RATE, T_CYCLES_PER_SECOND};
 
@@ -21,6 +25,8 @@ pub struct Apu {
     sample_accumulator: u32,         // counts in whole numbers so sample timing never drifts
     pulse1: Pulse,                   // FF10-FF14, the one that can slide its note
     pulse2: Pulse,                   // FF16-FF19
+    wave: Wave,                      // FF1A-FF1E, plus its shape at FF30-FF3F
+    noise: Noise,                    // FF20-FF23
     on: bool,                        // FF26 bit 7 cuts whole chip off
     sequencer: u32,                  // ticks towards next beat of shared timer
     beat: u8,                        // which of eight beats we are on
@@ -34,6 +40,8 @@ impl Apu {
             sample_accumulator: 0,
             pulse1: Pulse::default(),
             pulse2: Pulse::default(),
+            wave: Wave::default(),
+            noise: Noise::default(),
             on: false,
             sequencer: 0,
             beat: 0,
@@ -44,6 +52,8 @@ impl Apu {
         for _ in 0..t_cycles {
             self.pulse1.tick();
             self.pulse2.tick();
+            self.wave.tick();
+            self.noise.tick();
             self.tick_sequencer();
             self.sample_accumulator += AUDIO_SAMPLE_RATE;
             if self.sample_accumulator >= T_CYCLES_PER_SECOND {
@@ -68,6 +78,8 @@ impl Apu {
         if self.beat % 2 == 0 {
             self.pulse1.tick_length();
             self.pulse2.tick_length();
+            self.wave.tick_length();
+            self.noise.tick_length();
         }
         if self.beat == 2 || self.beat == 6 {
             self.pulse1.tick_sweep(); // only channel one can slide
@@ -75,6 +87,7 @@ impl Apu {
         if self.beat == 7 {
             self.pulse1.tick_envelope();
             self.pulse2.tick_envelope();
+            self.noise.tick_envelope();
         }
     }
 
@@ -84,7 +97,11 @@ impl Apu {
             return 0.0;
         }
         // headroom for four channels, so a full mix later still cannot clip
-        (dac(&self.pulse1) + dac(&self.pulse2)) / 4.0
+        (dac(&self.pulse1)
+            + dac(&self.pulse2)
+            + level(self.wave.output(), self.wave.enabled)
+            + level(self.noise.output(), self.noise.enabled))
+            / 4.0
     }
 
     /// hands waiting samples to host, ordered left, right, left, right.
@@ -118,7 +135,46 @@ impl Apu {
             0xFF17 => set_volume(&mut self.pulse2, value),
             0xFF18 => set_period_low(&mut self.pulse2, value),
             0xFF19 => set_period_high(&mut self.pulse2, value),
+            0xFF1A => {
+                self.wave.dac_on = value & 0x80 != 0;
+                if !self.wave.dac_on {
+                    self.wave.enabled = false;
+                }
+            }
+            0xFF1B => self.wave.set_length(value),
+            0xFF1C => self.wave.volume_code = (value >> 5) & 0x03,
+            0xFF1D => self.wave.period = (self.wave.period & 0x700) | value as u16,
+            0xFF1E => {
+                self.wave.period = (self.wave.period & 0xFF) | ((value as u16 & 0x07) << 8);
+                self.wave.length_enabled = value & 0x40 != 0;
+                if value & 0x80 != 0 {
+                    self.wave.trigger();
+                }
+            }
+            0xFF20 => self.noise.set_length(value),
+            0xFF21 => {
+                self.noise.env_start = value >> 4;
+                self.noise.env_up = value & 0x08 != 0;
+                self.noise.env_period = value & 0x07;
+                self.noise.volume = self.noise.env_start;
+                self.noise.dac_on = value & 0xF8 != 0;
+                if !self.noise.dac_on {
+                    self.noise.enabled = false;
+                }
+            }
+            0xFF22 => {
+                self.noise.shift = value >> 4;
+                self.noise.short = value & 0x08 != 0;
+                self.noise.divisor = value & 0x07;
+            }
+            0xFF23 => {
+                self.noise.length_enabled = value & 0x40 != 0;
+                if value & 0x80 != 0 {
+                    self.noise.trigger();
+                }
+            }
             0xFF26 => self.on = value & 0x80 != 0,
+            0xFF30..=0xFF3F => self.wave.ram[(addr - 0xFF30) as usize] = value,
             _ => {}
         }
     }
@@ -155,6 +211,14 @@ fn dac(pulse: &Pulse) -> f32 {
         return 0.0;
     }
     pulse.output() as f32 / 7.5 - 1.0
+}
+
+/// same, for channels that keep their own output rather than a pulse
+fn level(output: u8, enabled: bool) -> f32 {
+    if !enabled {
+        return 0.0;
+    }
+    output as f32 / 7.5 - 1.0
 }
 
 impl Default for Apu {
@@ -297,6 +361,81 @@ mod tests {
         assert_eq!(
             apu.sequencer, 0,
             "and lands exactly, with nothing left over"
+        );
+    }
+
+    #[test]
+    fn the_drawn_shape_channel_plays_what_was_put_in_its_memory() {
+        let mut apu = Apu::new();
+        apu.write(0xFF26, 0x80);
+        for slot in 0..16 {
+            apu.write(0xFF30 + slot, 0x0F); // first half of each pair silent, second loud
+        }
+        apu.write(0xFF1A, 0x80); // its own switch on
+        apu.write(0xFF1C, 0x20); // full volume
+        apu.write(0xFF1D, 0x00);
+        apu.write(0xFF1E, 0x84); // period 1024, and start
+
+        let samples = collect(&mut apu, T_CYCLES_PER_SECOND / 10);
+        let peak = samples.iter().cloned().fold(f32::MIN, f32::max);
+        let floor = samples.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(peak > 0.2, "nothing loud came out: {peak}");
+        assert!(floor < -0.2, "shape never went below zero: {floor}");
+    }
+
+    #[test]
+    fn the_drawn_shape_channel_has_its_own_switch() {
+        let mut apu = Apu::new();
+        apu.write(0xFF26, 0x80);
+        for slot in 0..16 {
+            apu.write(0xFF30 + slot, 0x0F);
+        }
+        apu.write(0xFF1C, 0x20);
+        apu.write(0xFF1E, 0x84); // started, but its switch at FF1A was never turned on
+
+        let samples = collect(&mut apu, T_CYCLES_PER_SECOND / 100);
+        assert!(samples.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn the_hiss_channel_makes_an_uneven_sound() {
+        let mut apu = Apu::new();
+        apu.write(0xFF26, 0x80);
+        apu.write(0xFF21, 0xF0); // loudest, no fade
+        apu.write(0xFF22, 0x00); // quickest shuffle
+        apu.write(0xFF23, 0x80); // start
+
+        let samples = collect(&mut apu, T_CYCLES_PER_SECOND / 10);
+        let flips = samples
+            .chunks_exact(2)
+            .map(|pair| pair[0] > 0.0)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .filter(|p| p[0] != p[1])
+            .count();
+        assert!(flips > 100, "too even to be hiss: {flips} flips");
+    }
+
+    #[test]
+    fn all_four_channels_together_stay_inside_the_range() {
+        let mut apu = playing_apu(1024);
+        apu.write(0xFF16, 0x80); // second square
+        apu.write(0xFF17, 0xF0);
+        apu.write(0xFF19, 0x85);
+        for slot in 0..16 {
+            apu.write(0xFF30 + slot, 0xFF); // drawn shape at its loudest everywhere
+        }
+        apu.write(0xFF1A, 0x80);
+        apu.write(0xFF1C, 0x20);
+        apu.write(0xFF1E, 0x86);
+        apu.write(0xFF21, 0xF0); // hiss
+        apu.write(0xFF22, 0x00);
+        apu.write(0xFF23, 0x80);
+
+        let samples = collect(&mut apu, T_CYCLES_PER_SECOND / 10);
+        assert!(
+            samples.iter().all(|s| (-1.0..=1.0).contains(s)),
+            "mix went outside what a speaker takes"
         );
     }
 }
